@@ -160,6 +160,13 @@ if(DISABLE_AZTEC_VM)
     add_definitions(-DDISABLE_AZTEC_VM=1)
 endif()
 add_subdirectory(src)
+
+# Tools
+add_executable(merge_mega_tool src/tools/merge_mega_tool.cpp)
+target_link_libraries(merge_mega_tool PRIVATE barretenberg env)
+set_target_properties(merge_mega_tool PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
+target_include_directories(merge_mega_tool PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+
 if (ENABLE_ASAN AND NOT(FUZZING))
     find_program(LLVM_SYMBOLIZER_PATH NAMES llvm-symbolizer-20)
     if (NOT(LLVM_SYMBOLIZER_PATH))

@@ -1,0 +1,6 @@
+[package]
+name = "hash_sign_poseidon_pedersen"
+type = "bin"
+authors = ["aztec-agent"]
+
+[dependencies]

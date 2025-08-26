@@ -153,3 +153,51 @@ WASM_EXPORT void schnorr_multisig_combine_signatures(uint8_t const* message_buf,
         *success = false;
     }
 }
+
+WASM_EXPORT void schnorr_construct_signature_poseidon2(uint8_t const* message_buf,
+                                                       uint8_t const* private_key,
+                                                       uint8_t* s,
+                                                       uint8_t* e)
+{
+    auto message = from_buffer<std::string>(message_buf);
+    auto priv_key = from_buffer<grumpkin::fr>(private_key);
+    grumpkin::g1::affine_element pub_key = grumpkin::g1::one * priv_key;
+    crypto::schnorr_key_pair<grumpkin::fr, grumpkin::g1> key_pair = { priv_key, pub_key };
+    auto sig = crypto::schnorr_construct_signature<Poseidon2Hasher, grumpkin::fq>(message, key_pair);
+    write(s, sig.s);
+    write(e, sig.e);
+}
+
+WASM_EXPORT void schnorr_verify_signature_poseidon2(uint8_t const* message_buf,
+                                                    uint8_t const* pub_key,
+                                                    uint8_t const* sig_s,
+                                                    uint8_t const* sig_e,
+                                                    bool* result)
+{
+    auto pubk = from_buffer<grumpkin::g1::affine_element>(pub_key);
+    auto message = from_buffer<std::string>(message_buf);
+    std::array<uint8_t, 32> s_arr;
+    std::array<uint8_t, 32> e_arr;
+    std::copy(sig_s, sig_s + 32, s_arr.begin());
+    std::copy(sig_e, sig_e + 32, e_arr.begin());
+    crypto::schnorr_signature sig = { s_arr, e_arr };
+    *result = crypto::schnorr_verify_signature<Poseidon2Hasher, grumpkin::fq, grumpkin::fr, grumpkin::g1>(
+        message, pubk, sig);
+}
+
+// Recompute R = s*G + e*Pk and return affine (x,y) 64-byte buffer
+WASM_EXPORT void schnorr_recompute_R_from_sig(uint8_t const* pub_key,
+                                              uint8_t const* sig_s,
+                                              uint8_t const* sig_e,
+                                              uint8_t* out_affine)
+{
+    auto pubk = from_buffer<grumpkin::g1::affine_element>(pub_key);
+    std::array<uint8_t, 32> s_arr;
+    std::array<uint8_t, 32> e_arr;
+    std::copy(sig_s, sig_s + 32, s_arr.begin());
+    std::copy(sig_e, sig_e + 32, e_arr.begin());
+    grumpkin::fr e = grumpkin::fr::serialize_from_buffer(&e_arr[0]);
+    grumpkin::fr s = grumpkin::fr::serialize_from_buffer(&s_arr[0]);
+    grumpkin::g1::affine_element R(grumpkin::g1::element(pubk) * e + grumpkin::g1::one * s);
+    write(out_affine, R);
+}

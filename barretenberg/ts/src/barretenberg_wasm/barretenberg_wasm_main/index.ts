@@ -79,6 +79,12 @@ export class BarretenbergWasmMain extends BarretenbergWasmBase {
     await Promise.all(this.workers.map(w => w.terminate()));
   }
 
+  // Returns current WebAssembly.Memory size in 64KiB pages.
+  public getMemoryPages(): number {
+    if (!this.memory) return 0;
+    return this.memory.buffer.byteLength >>> 16; // divide by 65536
+  }
+
   protected getImportObj(memory: WebAssembly.Memory) {
     const baseImports = super.getImportObj(memory);
 

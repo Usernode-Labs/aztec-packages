@@ -1,0 +1,8 @@
+[package]
+name = "hash_sign_blake"
+type = "bin"
+authors = ["aztec-agent"]
+
+[dependencies]
+schnorr = { git = "https://github.com/noir-lang/schnorr", tag = "v0.1.3" }
+

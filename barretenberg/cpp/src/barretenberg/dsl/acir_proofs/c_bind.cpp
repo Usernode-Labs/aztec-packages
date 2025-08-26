@@ -19,6 +19,11 @@
 
 #include "barretenberg/honk/execution_trace/mega_execution_trace.hpp"
 #include "barretenberg/serialize/msgpack.hpp"
+#include "barretenberg/stdlib/primitives/pairing_points.hpp"
+#include "barretenberg/stdlib/special_public_inputs/special_public_inputs.hpp"
+#include "barretenberg/crypto/sha256/sha256.hpp"
+#include "barretenberg/solidity_helpers/utils/utils.hpp"
+#include "barretenberg/merge/merge_mega.hpp"
 #include "honk_contract.hpp"
 #include <cstdint>
 #include <memory>
@@ -60,7 +65,7 @@ WASM_EXPORT void acir_prove_and_verify_ultra_honk(uint8_t const* acir_vec, uint8
 
 WASM_EXPORT void acir_prove_and_verify_mega_honk(uint8_t const* acir_vec, uint8_t const* witness_vec, bool* result)
 {
-    const acir_format::ProgramMetadata metadata{ .honk_recursion = 0 };
+    const acir_format::ProgramMetadata metadata{ .honk_recursion = 1 };
 
     acir_format::AcirProgram program{
         acir_format::circuit_buf_to_acir_format(from_buffer<std::vector<uint8_t>>(acir_vec)),
@@ -77,6 +82,201 @@ WASM_EXPORT void acir_prove_and_verify_mega_honk(uint8_t const* acir_vec, uint8_
     MegaVerifier verifier{ verification_key };
 
     *result = verifier.template verify_proof<DefaultIO>(proof).result;
+}
+
+WASM_EXPORT void acir_prove_mega_honk(uint8_t const* acir_vec,
+                                      uint8_t const* witness_vec,
+                                      uint8_t** proof_out,
+                                      uint8_t** vk_out)
+{
+    info("MEGAHONK_PROVE: entry");
+    using DeciderProvingKey = DeciderProvingKey_<MegaFlavor>;
+    using VerificationKey = MegaFlavor::VerificationKey;
+    
+    info("MEGAHONK_PROVE: parsing inputs");
+    const acir_format::ProgramMetadata metadata{ .honk_recursion = 1 };
+    acir_format::AcirProgram program{
+        acir_format::circuit_buf_to_acir_format(from_buffer<std::vector<uint8_t>>(acir_vec)),
+        acir_format::witness_buf_to_witness_data(from_buffer<std::vector<uint8_t>>(witness_vec))
+    };
+    
+    info("MEGAHONK_PROVE: creating circuit builder");
+    auto builder = acir_format::create_circuit<MegaCircuitBuilder>(program, metadata);
+    
+    info("MEGAHONK_PROVE: creating proving key");
+    auto proving_key = std::make_shared<DeciderProvingKey>(builder);
+    
+    info("MEGAHONK_PROVE: creating verification key");
+    auto verification_key = std::make_shared<VerificationKey>(proving_key->get_precomputed());
+    
+    info("MEGAHONK_PROVE: creating prover");
+    MegaProver prover{ proving_key, verification_key };
+    
+    info("MEGAHONK_PROVE: constructing proof");
+    auto proof = prover.construct_proof();
+    info("MEGAHONK_PROVE: proof constructed, size=", proof.size());
+    
+    // Hash the proof as a vector<fr> (unserialized), akin to VK hashing via transcript
+    {
+        auto obj_hash = MegaFlavor::Transcript::hash(proof);
+        info("MEGAHONK_PROVE: Proof (object) hash: ", obj_hash);
+    }
+    info("MEGAHONK_PROVE: serializing outputs");
+    // Serialize proof with size prefix so the verifier can reconstruct the vector<fr> correctly.
+    auto proof_buffer = to_buffer<true>(proof);
+    // Hash the serialized proof bytes to compare against verifier-side reconstruction.
+    auto proof_hash = crypto::sha256(proof_buffer);
+    info("MEGAHONK_PROVE: Proof SHA256: ", proof_hash);
+    auto vk_buffer = to_buffer(*verification_key);
+    info("MEGAHONK_PROVE: proof buffer bytes=", proof_buffer.size(), ", vk buffer bytes=", vk_buffer.size());
+    
+    *proof_out = to_heap_buffer(proof_buffer);
+    *vk_out = to_heap_buffer(vk_buffer);
+    info("MEGAHONK_PROVE: exit ok");
+}
+
+WASM_EXPORT void acir_verify_mega_honk(uint8_t const* proof_buf, uint8_t const* vk_buf, bool* result)
+{
+    info("MEGAHONK_VERIFY: Function started");
+    // Inputs are length-prefixed byte vectors; unwrap before decoding
+    auto proof_bytes = from_buffer<std::vector<uint8_t>>(proof_buf);
+    // Log the hash of the received serialized proof bytes.
+    auto recv_hash = crypto::sha256(proof_bytes);
+    info("MEGAHONK_VERIFY: Received Proof SHA256: ", recv_hash);
+    auto proof = from_buffer<HonkProof>(proof_bytes);
+    // Hash the deserialized proof object (vector<fr>)
+    {
+        auto obj_hash = MegaFlavor::Transcript::hash(proof);
+        info("MEGAHONK_VERIFY: Proof (object) hash: ", obj_hash);
+    }
+    // Re-serialize and hash; should match received hash if (de)serialization is symmetric.
+    auto proof_bytes_roundtrip = to_buffer(proof);
+    auto roundtrip_hash = crypto::sha256(proof_bytes_roundtrip);
+    info("MEGAHONK_VERIFY: Roundtrip Proof SHA256: ", roundtrip_hash);
+    if (!(recv_hash == proof_bytes_roundtrip)) {
+        info("MEGAHONK_VERIFY: WARNING Proof hash mismatch between received and roundtrip serialization");
+    }
+    info("MEGAHONK_VERIFY: Proof deserialized");
+    auto vk_bytes = from_buffer<std::vector<uint8_t>>(vk_buf);
+    auto vk_raw = from_buffer<MegaFlavor::VerificationKey>(vk_bytes);
+    info("MEGAHONK_VERIFY: VK deserialized");
+    auto verification_key = std::make_shared<MegaFlavor::VerificationKey>(vk_raw);
+    MegaVerifier verifier{ verification_key };
+    info("MEGAHONK_VERIFY: Verifying proof");
+
+    // Choose IO shape based on expected public inputs to support recursion variants.
+    // Default to application IO (pairing points only).
+    bool ok = false;
+    const size_t npi = static_cast<size_t>(verification_key->num_public_inputs);
+    if (npi >= DefaultIO::PUBLIC_INPUTS_SIZE) {
+        ok = verifier.template verify_proof<DefaultIO>(proof).result;
+    } else {
+        // If unexpected size, fall back to DefaultIO but log a warning.
+        info("MEGAHONK_VERIFY: Unexpected num_public_inputs=", npi, "; falling back to DefaultIO.");
+        ok = verifier.template verify_proof<DefaultIO>(proof).result;
+    }
+    *result = ok;
+    info("MEGAHONK_VERIFY: Verification result: ", *result);
+}
+
+
+WASM_EXPORT void acir_write_vk_mega_honk(uint8_t const* acir_vec, uint8_t** out)
+{
+    info("MEGAHONK_WRITE_VK: Function started");
+    using DeciderProvingKey = DeciderProvingKey_<MegaFlavor>;
+    using VerificationKey = MegaFlavor::VerificationKey;
+
+    // lambda to free the builder
+    DeciderProvingKey proving_key = [&] {
+        const acir_format::ProgramMetadata metadata{ .honk_recursion = 1 };
+        acir_format::AcirProgram program{ acir_format::circuit_buf_to_acir_format(
+            from_buffer<std::vector<uint8_t>>(acir_vec)) };
+        auto builder = acir_format::create_circuit<MegaCircuitBuilder>(program, metadata);
+        return DeciderProvingKey(builder);
+    }();
+    info("MEGAHONK_WRITE_VK: Proving key created");
+    VerificationKey vk(proving_key.get_precomputed());
+    info("MEGAHONK_WRITE_VK: VK created");
+    auto buffer = to_buffer(vk);
+    *out = to_heap_buffer(buffer);
+    info("MEGAHONK_WRITE_VK: Function completed");
+}
+
+WASM_EXPORT void merge_mega(uint8_t const* proofA_fields_buf,
+                            uint8_t const* vkA_buf,
+                            uint8_t const* proofB_fields_buf,
+                            uint8_t const* vkB_buf,
+                            uint8_t** out_proof,
+                            uint8_t** out_vk,
+                            uint8_t** out_metrics)
+{
+    using namespace bb::merge_mega;
+    try {
+        info("merge_mega: entry");
+        auto proofA = from_buffer<std::vector<uint8_t>>(proofA_fields_buf);
+        auto vkA = from_buffer<std::vector<uint8_t>>(vkA_buf);
+        auto proofB = from_buffer<std::vector<uint8_t>>(proofB_fields_buf);
+        auto vkB = from_buffer<std::vector<uint8_t>>(vkB_buf);
+        info("merge_mega: buffers sizes A:", proofA.size(), ",", vkA.size(), "; B:", proofB.size(), ",", vkB.size());
+        auto sha_proofA = crypto::sha256(proofA);
+        auto sha_vkA = crypto::sha256(vkA);
+        auto sha_proofB = crypto::sha256(proofB);
+        auto sha_vkB = crypto::sha256(vkB);
+        info("merge_mega: SHA256 A proof:", sha_proofA);
+        info("merge_mega: SHA256 A vk:", sha_vkA);
+        info("merge_mega: SHA256 B proof:", sha_proofB);
+        info("merge_mega: SHA256 B vk:", sha_vkB);
+
+        info("merge_mega: calling merge()…");
+        auto res = merge(proofA, vkA, proofB, vkB);
+        info("merge_mega: merge() returned. out sizes:", res.merged_proof_bytes.size(), ",", res.merged_vk_bytes.size());
+        info("merge_mega: SHA256 merged proof:", crypto::sha256(res.merged_proof_bytes));
+        info("merge_mega: SHA256 merged vk:", crypto::sha256(res.merged_vk_bytes));
+        // res.merged_proof_bytes is already length-prefixed vector<fr> bytes
+        *out_proof = to_heap_buffer(res.merged_proof_bytes);
+        *out_vk = to_heap_buffer(res.merged_vk_bytes);
+        *out_metrics = to_heap_buffer(std::vector<uint8_t>(res.metrics_json.begin(), res.metrics_json.end()));
+    } catch (...) {
+        // Exceptions are disabled in WASM builds (-fno-exceptions). Use a generic error message.
+        std::string err = std::string("merge_mega error");
+        *out_proof = to_heap_buffer(std::vector<uint8_t>{});
+        *out_vk = to_heap_buffer(std::vector<uint8_t>{});
+        *out_metrics = to_heap_buffer(std::vector<uint8_t>(err.begin(), err.end()));
+    }
+}
+
+WASM_EXPORT void recursive_mega(uint8_t const* proof_fields_buf,
+                                uint8_t const* vk_buf,
+                                uint8_t** out_proof,
+                                uint8_t** out_vk,
+                                uint8_t** out_metrics)
+{
+    using namespace bb::merge_mega;
+    try {
+        info("recursive_mega: entry");
+        auto proof = from_buffer<std::vector<uint8_t>>(proof_fields_buf);
+        auto vk = from_buffer<std::vector<uint8_t>>(vk_buf);
+        info("recursive_mega: buffers sizes proof:", proof.size(), ", vk:", vk.size());
+        auto res = recursive_single(proof, vk);
+        *out_proof = to_heap_buffer(res.merged_proof_bytes);
+        *out_vk = to_heap_buffer(res.merged_vk_bytes);
+        *out_metrics = to_heap_buffer(std::vector<uint8_t>(res.metrics_json.begin(), res.metrics_json.end()));
+    } catch (...) {
+        std::string err = std::string("recursive_mega error");
+        *out_proof = to_heap_buffer(std::vector<uint8_t>{});
+        *out_vk = to_heap_buffer(std::vector<uint8_t>{});
+        *out_metrics = to_heap_buffer(std::vector<uint8_t>(err.begin(), err.end()));
+    }
+}
+
+WASM_EXPORT void bb_memory_pages(uint32_t* out_pages)
+{
+#if defined(__wasm__)
+    uint32_t pages = __builtin_wasm_memory_size(0);
+#else
+    uint32_t pages = 0;
+#endif
+    *out_pages = htonl(pages);
 }
 
 WASM_EXPORT void acir_prove_aztec_client(uint8_t const* ivc_inputs_buf, uint8_t** out_proof, uint8_t** out_vk)

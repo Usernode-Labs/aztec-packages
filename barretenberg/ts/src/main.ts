@@ -107,6 +107,27 @@ export async function proveAndVerifyMegaHonk(bytecodePath: string, witnessPath: 
   /* eslint-enable camelcase */
 }
 
+export async function proveMegaHonkToFiles(
+  bytecodePath: string,
+  witnessPath: string,
+  crsPath: string,
+  proofOutPath: string,
+  vkOutPath: string,
+) {
+  const { api } = await initLite(crsPath);
+  try {
+    debug(`Creating MegaHonk proof bytecodePath=${bytecodePath}, witnessPath=${witnessPath}`);
+    const bytecode = readFileSync(bytecodePath);
+    const witness = readFileSync(witnessPath);
+    const { proof, vk } = await api.acirProveMegaHonk(bytecode, witness);
+    writeFileSync(proofOutPath, proof);
+    writeFileSync(vkOutPath, vk);
+    debug(`Wrote proof to ${proofOutPath} and vk to ${vkOutPath}`);
+  } finally {
+    await api.destroy();
+  }
+}
+
 export async function gateCountUltra(bytecodePath: string, recursive: boolean, honkRecursion: boolean) {
   const api = await Barretenberg.new({ threads: 1 });
   try {
@@ -329,6 +350,18 @@ program
     const { crsPath } = handleGlobalOptions();
     const result = await proveAndVerifyMegaHonk(bytecodePath, witnessPath, crsPath);
     process.exit(result ? 0 : 1);
+  });
+
+program
+  .command('prove_mega_honk')
+  .description('Generate a MegaHonk proof and write proof and vk to files.')
+  .option('-b, --bytecode-path <path>', 'Specify the bytecode path', './target/program.json')
+  .option('-w, --witness-path <path>', 'Specify the witness path', './target/witness.gz')
+  .requiredOption('--proof-out <path>', 'Path to write the proof bytes', './proofs/proof_mega.bin')
+  .requiredOption('--vk-out <path>', 'Path to write the verification key bytes', './proofs/vk_mega.bin')
+  .action(async ({ bytecodePath, witnessPath, proofOut, vkOut }) => {
+    const { crsPath } = handleGlobalOptions();
+    await proveMegaHonkToFiles(bytecodePath, witnessPath, crsPath, proofOut, vkOut);
   });
 
 program

@@ -1,0 +1,7 @@
+[package]
+name = "mega_merge_demo"
+type = "bin"
+authors = ["aztec-integration"]
+
+[dependencies]
+

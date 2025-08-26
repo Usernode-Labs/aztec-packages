@@ -197,6 +197,10 @@ CircuitProve::Response CircuitProve::execute(BB_UNUSED const BBApiRequest& reque
         return _prove<UltraRollupFlavor>(
             std::move(circuit.bytecode), std::move(witness), std::move(circuit.verification_key));
     }
+    if (settings.oracle_hash_type == "poseidon2_mega") {
+        return _prove<MegaFlavor>(
+            std::move(circuit.bytecode), std::move(witness), std::move(circuit.verification_key));
+    }
     if (settings.oracle_hash_type == "poseidon2" && !settings.disable_zk) {
         // if we are not disabling ZK and the oracle hash type is poseidon2, we are using the UltraZKFlavor
         return _prove<UltraZKFlavor>(
@@ -253,6 +257,8 @@ CircuitComputeVk::Response CircuitComputeVk::execute(BB_UNUSED const BBApiReques
 
     if (settings.ipa_accumulation) {
         compute_vk_and_fields.template operator()<UltraRollupFlavor>();
+    } else if (settings.oracle_hash_type == "poseidon2_mega") {
+        compute_vk_and_fields.template operator()<MegaFlavor>();
     } else if (settings.oracle_hash_type == "poseidon2" && !settings.disable_zk) {
         compute_vk_and_fields.template operator()<UltraZKFlavor>();
     } else if (settings.oracle_hash_type == "poseidon2" && settings.disable_zk) {
@@ -302,7 +308,9 @@ CircuitVerify::Response CircuitVerify::execute(BB_UNUSED const BBApiRequest& req
     bool verified = false;
 
     // if the ipa accumulation flag is set we are using the UltraRollupFlavor
-    if (ipa_accumulation) {
+    if (settings.oracle_hash_type == "poseidon2_mega") {
+        verified = _verify<MegaFlavor>(ipa_accumulation, verification_key, public_inputs, proof);
+    } else if (ipa_accumulation) {
         verified = _verify<UltraRollupFlavor>(ipa_accumulation, verification_key, public_inputs, proof);
     } else if (settings.oracle_hash_type == "poseidon2" && !settings.disable_zk) {
         verified = _verify<UltraZKFlavor>(ipa_accumulation, verification_key, public_inputs, proof);
@@ -329,9 +337,14 @@ VkAsFields::Response VkAsFields::execute(BB_UNUSED const BBApiRequest& request) 
 {
     std::vector<bb::fr> fields;
 
-    // Standard UltraHonk flavors
-    auto vk = from_buffer<UltraFlavor::VerificationKey>(verification_key);
-    fields = vk.to_field_elements();
+    // Try MegaFlavor first; fallback to UltraFlavor
+    try {
+        auto vk = from_buffer<MegaFlavor::VerificationKey>(verification_key);
+        fields = vk.to_field_elements();
+    } catch (...) {
+        auto vk = from_buffer<UltraFlavor::VerificationKey>(verification_key);
+        fields = vk.to_field_elements();
+    }
 
     return { std::move(fields) };
 }

@@ -1,0 +1,5 @@
+[package]
+name = "hash_ecdsa"
+type = "bin"
+authors = ["aztec-agent"]
+

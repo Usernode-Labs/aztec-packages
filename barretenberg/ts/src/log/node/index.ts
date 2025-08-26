@@ -26,7 +26,7 @@ export function initLogger(
     target: 'pino/file',
     options: { destination: useStdErr ? 2 : 1 },
   });
-  logger = pino({ ...defaultOptions, level }, transport);
+  logger = pino({ ...defaultOptions, level }, transport) as Logger<'verbose'>;
 }
 
 export function createDebugLogger(name: string) {

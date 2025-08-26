@@ -18,6 +18,7 @@
 #include "barretenberg/api/api_client_ivc.hpp"
 #include "barretenberg/api/api_msgpack.hpp"
 #include "barretenberg/api/api_ultra_honk.hpp"
+#include "barretenberg/api/api_mega_honk.hpp"
 #include "barretenberg/api/file_io.hpp"
 #include "barretenberg/api/prove_tube.hpp"
 #include "barretenberg/bb/cli11_formatter.hpp"
@@ -26,6 +27,7 @@
 #include "barretenberg/bbapi/c_bind.hpp"
 #include "barretenberg/common/op_count.hpp"
 #include "barretenberg/common/thread.hpp"
+#include "barretenberg/merge/merge_mega.hpp"
 #include "barretenberg/flavor/ultra_rollup_flavor.hpp"
 #include "barretenberg/srs/factories/native_crs_factory.hpp"
 #include "barretenberg/srs/global_crs.hpp"
@@ -169,7 +171,7 @@ int parse_and_run_cli_command(int argc, char* argv[])
                 "particular type of circuit to be constructed and proven for some implicit scheme.")
             ->envname("BB_SCHEME")
             ->default_val("ultra_honk")
-            ->check(CLI::IsMember({ "client_ivc", "avm", "ultra_honk" }).name("is_member"));
+            ->check(CLI::IsMember({ "client_ivc", "avm", "ultra_honk", "mega_honk" }).name("is_member"));
     };
 
     const auto add_crs_path_option = [&](CLI::App* subcommand) {
@@ -413,6 +415,24 @@ int parse_and_run_cli_command(int argc, char* argv[])
     remove_zk_option(write_solidity_verifier);
     add_crs_path_option(write_solidity_verifier);
 
+    // Merge two MegaHonk proofs into a Mega outer proof
+    CLI::App* merge_mega = app.add_subcommand("merge_mega",
+                                             "Verify two MegaHonk proofs inside a Mega circuit and output merged proof/VK.");
+    std::filesystem::path proofA_fields_path, vkA_path, proofB_fields_path, vkB_path;
+    merge_mega->add_option("--proofA_fields_path", proofA_fields_path, "Path to proof A fields buffer (to_buffer(vector<Fr>))")->required();
+    merge_mega->add_option("--vkA_path", vkA_path, "Path to VK A bytes (to_buffer(VK))")->required();
+    merge_mega->add_option("--proofB_fields_path", proofB_fields_path, "Path to proof B fields buffer (to_buffer(vector<Fr>))")->required();
+    merge_mega->add_option("--vkB_path", vkB_path, "Path to VK B bytes (to_buffer(VK))")->required();
+    add_output_path_option(merge_mega, output_path);
+
+    // Convert Mega public_inputs+proof (vector<uint256_t> each) to a single vector<Fr> buffer
+    CLI::App* export_mega_fields = app.add_subcommand("export_mega_fields",
+                                                     "Pack Mega public_inputs + proof (uint256_t vectors) into a single Fr fields buffer");
+    std::filesystem::path in_public_inputs_path, in_proof_path, out_fields_path;
+    export_mega_fields->add_option("--public_inputs_path", in_public_inputs_path, "Path to public_inputs file (to_buffer(vector<uint256_t>))")->required();
+    export_mega_fields->add_option("--proof_path", in_proof_path, "Path to proof file (to_buffer(vector<uint256_t>))")->required();
+    export_mega_fields->add_option("--out_fields_path", out_fields_path, "Output path for fields buffer (to_buffer(vector<Fr>))")->required();
+
     /***************************************************************************************************************
      * Subcommand: OLD_API
      ***************************************************************************************************************/
@@ -612,6 +632,33 @@ int parse_and_run_cli_command(int argc, char* argv[])
         if (msgpack_run_command->parsed()) {
             return execute_msgpack_run(msgpack_input_file);
         }
+        if (merge_mega->parsed()) {
+            auto proofA_buf = read_file(proofA_fields_path);
+            auto vkA_buf = read_file(vkA_path);
+            auto proofB_buf = read_file(proofB_fields_path);
+            auto vkB_buf = read_file(vkB_path);
+            auto res = merge_mega::merge(proofA_buf, vkA_buf, proofB_buf, vkB_buf);
+            std::filesystem::create_directories(output_path);
+            write_file((output_path / "merged_proof").string(), res.merged_proof_bytes);
+            write_file((output_path / "merged_vk").string(), res.merged_vk_bytes);
+            std::vector<uint8_t> metrics(res.metrics_json.begin(), res.metrics_json.end());
+            write_file((output_path / "metrics.json").string(), metrics);
+            vinfo("merge metrics: ", res.metrics_json);
+            return 0;
+        }
+        if (export_mega_fields->parsed()) {
+            auto pub_buf = read_file(in_public_inputs_path);
+            auto proof_buf = read_file(in_proof_path);
+            auto pubs = from_buffer<std::vector<uint256_t>>(pub_buf);
+            auto proof = from_buffer<std::vector<uint256_t>>(proof_buf);
+            std::vector<bb::fr> fields;
+            fields.reserve(pubs.size() + proof.size());
+            for (auto& x : pubs) fields.emplace_back(bb::fr(x));
+            for (auto& x : proof) fields.emplace_back(bb::fr(x));
+            auto out = to_buffer(fields);
+            write_file(out_fields_path.string(), out);
+            return 0;
+        }
         // TUBE
         if (prove_tube_command->parsed()) {
             // TODO(https://github.com/AztecProtocol/barretenberg/issues/1201): Potentially remove this extra logic.
@@ -692,6 +739,22 @@ int parse_and_run_cli_command(int argc, char* argv[])
                 }
 #endif
                 return 0;
+            }
+            return execute_non_prove_command(api);
+        } else if (flags.scheme == "mega_honk") {
+            MegaHonkAPI api;
+            if (prove->parsed()) {
+                api.prove(flags, bytecode_path, witness_path, vk_path, output_path);
+                return 0;
+            }
+            if (write_vk->parsed()) {
+                api.write_vk(flags, bytecode_path, output_path);
+                return 0;
+            }
+            if (verify->parsed()) {
+                const bool verified = api.verify(flags, public_inputs_path, proof_path, vk_path);
+                vinfo("verified: ", verified);
+                return verified ? 0 : 1;
             }
             return execute_non_prove_command(api);
         } else {

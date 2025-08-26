@@ -69,6 +69,7 @@ endif()
 
 add_subdirectory(barretenberg/api)
 add_subdirectory(barretenberg/bb)
+add_subdirectory(barretenberg/merge)
 add_subdirectory(barretenberg/bbapi)
 add_subdirectory(barretenberg/boomerang_value_detection)
 add_subdirectory(barretenberg/circuit_checker)
@@ -171,6 +172,7 @@ set(BARRETENBERG_TARGET_OBJECTS
     $<TARGET_OBJECTS:stdlib_poseidon2_objects>
     $<TARGET_OBJECTS:stdlib_primitives_objects>
     $<TARGET_OBJECTS:stdlib_protogalaxy_verifier_objects>
+    $<TARGET_OBJECTS:merge_objects>
     $<TARGET_OBJECTS:stdlib_schnorr_objects>
     $<TARGET_OBJECTS:stdlib_sha256_objects>
     $<TARGET_OBJECTS:stdlib_translator_vm_verifier_objects>
@@ -211,6 +213,8 @@ if(WASM)
         barretenberg-debug.wasm
         PRIVATE
         -nostartfiles -Wl,--no-entry,--export-dynamic
+        -Wl,--initial-memory=268435456
+        -Wl,--max-memory=4294967296
     )
 
     # Strip debug info to create the release version.

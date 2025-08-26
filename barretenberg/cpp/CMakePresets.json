@@ -7,6 +7,45 @@
   },
   "configurePresets": [
     {
+      "name": "clang19",
+      "displayName": "Build with Clang-19",
+      "description": "Build with globally installed Clang-19",
+      "inherits": "default",
+      "environment": {
+        "CC": "clang-19",
+        "CXX": "clang++-19"
+      }
+    },
+    {
+      "name": "clang19-pic",
+      "displayName": "Release build with Position Independent Code (Clang-19)",
+      "description": "Build with globally installed Clang-19 using Position Independent Code",
+      "inherits": "clang19",
+      "binaryDir": "build-pic",
+      "cacheVariables": {
+        "ENABLE_PIC": "ON"
+      }
+    },
+    {
+      "name": "clang19-pic-assert",
+      "displayName": "Release PIC build with asserts (Clang-19)",
+      "description": "Build with globally installed Clang-19 using Position Independent Code and asserts",
+      "inherits": "clang19-pic",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "RelWithAssert"
+      }
+    },
+    {
+      "name": "clang19-assert",
+      "binaryDir": "build",
+      "displayName": "Build with Clang-19 using RelWithAssert",
+      "description": "Build with globally installed Clang-19 in release with ASSERTs mode",
+      "inherits": "clang19",
+      "environment": {
+        "CMAKE_BUILD_TYPE": "RelWithAssert"
+      }
+    },
+    {
       "name": "default",
       "displayName": "Build with Clang",
       "description": "Build with globally installed Clang",
@@ -498,6 +537,11 @@
       "configurePreset": "clang20"
     },
     {
+      "name": "clang19",
+      "inherits": "default",
+      "configurePreset": "clang19"
+    },
+    {
       "name": "darwin-arm64",
       "inherits": "default",
       "configurePreset": "darwin-arm64"
@@ -541,6 +585,11 @@
       "name": "clang20-pic",
       "inherits": "default",
       "configurePreset": "clang20-pic"
+    },
+    {
+      "name": "clang19-pic",
+      "inherits": "default",
+      "configurePreset": "clang19-pic"
     },
     {
       "name": "default-pic",
@@ -715,6 +764,16 @@
       "name": "clang20-coverage",
       "inherits": "default",
       "configurePreset": "clang20-coverage"
+    },
+    {
+      "name": "clang19-pic-assert",
+      "inherits": "default",
+      "configurePreset": "clang19-pic-assert"
+    },
+    {
+      "name": "clang19-assert",
+      "inherits": "default",
+      "configurePreset": "clang19-assert"
     },
     {
       "name": "wasm",

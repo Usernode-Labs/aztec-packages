@@ -34,6 +34,15 @@ WASM_EXPORT void acir_prove_and_verify_mega_honk(uint8_t const* constraint_syste
                                                  uint8_t const* witness_buf,
                                                  bool* result);
 
+WASM_EXPORT void acir_prove_mega_honk(uint8_t const* acir_vec,
+                                      uint8_t const* witness_vec,
+                                      uint8_t** proof_out,
+                                      uint8_t** vk_out);
+
+WASM_EXPORT void acir_verify_mega_honk(uint8_t const* proof_buf, uint8_t const* vk_buf, bool* result);
+
+WASM_EXPORT void acir_write_vk_mega_honk(uint8_t const* acir_vec, uint8_t** out);
+
 WASM_EXPORT void acir_prove_aztec_client(uint8_t const* ivc_inputs_buf, uint8_t** out_proof, uint8_t** out_vk);
 
 WASM_EXPORT void acir_verify_aztec_client(uint8_t const* proof_buf, uint8_t const* vk_buf, bool* result);
@@ -101,5 +110,25 @@ WASM_EXPORT void acir_proof_as_fields_ultra_honk(uint8_t const* proof_buf, fr::v
 WASM_EXPORT void acir_vk_as_fields_ultra_honk(uint8_t const* vk_buf, fr::vec_out_buf out_vkey);
 
 WASM_EXPORT void acir_vk_as_fields_mega_honk(uint8_t const* vk_buf, fr::vec_out_buf out_vkey);
+
+// Merge two Mega proofs inside a Mega circuit and return merged proof, vk, and metrics json.
+WASM_EXPORT void merge_mega(uint8_t const* proofA_fields_buf,
+                            uint8_t const* vkA_buf,
+                            uint8_t const* proofB_fields_buf,
+                            uint8_t const* vkB_buf,
+                            uint8_t** out_proof,
+                            uint8_t** out_vk,
+                            uint8_t** out_metrics);
+
+WASM_EXPORT void recursive_mega(uint8_t const* proof_fields_buf,
+                                uint8_t const* vk_buf,
+                                uint8_t** out_proof,
+                                uint8_t** out_vk,
+                                uint8_t** out_metrics);
+
+// acirVerifyMegaHonk remains the default for simple app circuits. Use merge_mega for recursive merges.
+
+// Return current memory pages of the wasm instance (1 page = 64KiB), big endian u32 via out pointer.
+WASM_EXPORT void bb_memory_pages(uint32_t* out_pages);
 
 WASM_EXPORT void acir_gates_aztec_client(uint8_t const* ivc_inputs_buf, uint8_t** out);

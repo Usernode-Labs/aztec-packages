@@ -622,6 +622,86 @@ export class BarretenbergApi {
     const out = result.map((r, i) => outTypes[i].fromBuffer(r));
     return out[0];
   }
+
+  async acirWriteVkMegaHonk(constraintSystemBuf: Uint8Array): Promise<Uint8Array> {
+    const inArgs = [constraintSystemBuf].map(serializeBufferable);
+    const outTypes: OutputType[] = [BufferDeserializer()];
+    const result = await this.wasm.callWasmExport(
+      'acir_write_vk_mega_honk',
+      inArgs,
+      outTypes.map(t => t.SIZE_IN_BYTES),
+    );
+    const out = result.map((r, i) => outTypes[i].fromBuffer(r));
+    return out[0];
+  }
+
+  async acirProveMegaHonk(constraintSystemBuf: Uint8Array, witnessBuf: Uint8Array): Promise<{ proof: Uint8Array, vk: Uint8Array }> {
+    const inArgs = [constraintSystemBuf, witnessBuf].map(serializeBufferable);
+    const outTypes: OutputType[] = [BufferDeserializer(), BufferDeserializer()];
+    const result = await this.wasm.callWasmExport(
+      'acir_prove_mega_honk',
+      inArgs,
+      outTypes.map(t => t.SIZE_IN_BYTES),
+    );
+    const out = result.map((r, i) => outTypes[i].fromBuffer(r));
+    return { proof: out[0], vk: out[1] };
+  }
+
+  async acirVerifyMegaHonk(proofBuf: Uint8Array, vkBuf: Uint8Array): Promise<boolean> {
+    const inArgs = [proofBuf, vkBuf].map(serializeBufferable);
+    const outTypes: OutputType[] = [BoolDeserializer()];
+    const result = await this.wasm.callWasmExport(
+      'acir_verify_mega_honk',
+      inArgs,
+      outTypes.map(t => t.SIZE_IN_BYTES),
+    );
+    const out = result.map((r, i) => outTypes[i].fromBuffer(r));
+    return out[0];
+  }
+
+  async mergeMega(
+    proofAFieldsBuf: Uint8Array,
+    vkABuf: Uint8Array,
+    proofBFieldsBuf: Uint8Array,
+    vkBBuf: Uint8Array
+  ): Promise<{ proof: Uint8Array, vk: Uint8Array, metrics: Uint8Array }> {
+    const inArgs = [proofAFieldsBuf, vkABuf, proofBFieldsBuf, vkBBuf].map(serializeBufferable);
+    const outTypes: OutputType[] = [BufferDeserializer(), BufferDeserializer(), BufferDeserializer()];
+    const result = await this.wasm.callWasmExport(
+      'merge_mega',
+      inArgs,
+      outTypes.map(t => t.SIZE_IN_BYTES),
+    );
+    const out = result.map((r, i) => outTypes[i].fromBuffer(r));
+    return { proof: out[0], vk: out[1], metrics: out[2] };
+  }
+
+  async recursiveMega(
+    proofFieldsBuf: Uint8Array,
+    vkBuf: Uint8Array
+  ): Promise<{ proof: Uint8Array, vk: Uint8Array, metrics: Uint8Array }> {
+    const inArgs = [proofFieldsBuf, vkBuf].map(serializeBufferable);
+    const outTypes: OutputType[] = [BufferDeserializer(), BufferDeserializer(), BufferDeserializer()];
+    const result = await this.wasm.callWasmExport(
+      'recursive_mega',
+      inArgs,
+      outTypes.map(t => t.SIZE_IN_BYTES),
+    );
+    const out = result.map((r, i) => outTypes[i].fromBuffer(r));
+    return { proof: out[0], vk: out[1], metrics: out[2] };
+  }
+
+  async bbMemoryPages(): Promise<number> {
+    const inArgs: Uint8Array[] = [];
+    const outTypes: OutputType[] = [NumberDeserializer()];
+    const result = await this.wasm.callWasmExport(
+      'bb_memory_pages',
+      inArgs,
+      outTypes.map(t => t.SIZE_IN_BYTES),
+    );
+    const out = result.map((r, i) => outTypes[i].fromBuffer(r));
+    return out[0];
+  }
 }
 export class BarretenbergApiSync {
   constructor(protected wasm: BarretenbergWasmMain) {}

@@ -20,6 +20,7 @@ __metadata:
   resolution: "@aztec/bb.js@workspace:."
   dependencies:
     "@jest/globals": "npm:^30.0.0"
+    "@noble/secp256k1": "npm:2.0.0"
     "@swc/core": "npm:^1.10.1"
     "@swc/jest": "npm:^0.2.37"
     "@types/detect-node": "npm:^2.0.0"
@@ -997,6 +998,13 @@ __metadata:
     "@emnapi/runtime": "npm:^1.4.3"
     "@tybys/wasm-util": "npm:^0.10.0"
   checksum: 10/5fd518182427980c28bc724adf06c5f32f9a8915763ef560b5f7d73607d30cd15ac86d0cbd2eb80d4cfab23fc80d0876d89ca36a9daadcb864bc00917c94187c
+  languageName: node
+  linkType: hard
+
+"@noble/secp256k1@npm:2.0.0":
+  version: 2.0.0
+  resolution: "@noble/secp256k1@npm:2.0.0"
+  checksum: 10/64677b25988c1fa0a97af718332f88d49ec46a9d030c1d119861a665863cbabddefb1fd1e037608e130ee2aedb4c5edfc430b9bf4c96b43797855343b96318de
   languageName: node
   linkType: hard
 

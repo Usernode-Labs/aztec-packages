@@ -42,6 +42,9 @@ export type CircuitOptions = {
 export class Barretenberg extends BarretenbergApi {
   private options: BackendOptions;
   private bbApi: BbApiBase;
+  // Track CRS state for ensure-once initialization and upgrades.
+  private srsInitialized = false;
+  private srsSize = 0; // dyadic subgroup size used for initialization
 
   private constructor(
     private worker: any,
@@ -51,6 +54,14 @@ export class Barretenberg extends BarretenbergApi {
     super(wasm);
     this.options = options;
     this.bbApi = new AsyncApi(wasm);
+  }
+
+  // Ensure CRS is initialized for verify-only flows that skip proving init.
+  async acirVerifyMegaHonk(proofBuf: Uint8Array, vkBuf: Uint8Array): Promise<boolean> {
+    // Pairing uses BN254 verifier CRS precomputations; load a minimal CRS if not already loaded.
+    // Using 0 chooses the minimal size in initSRSForCircuitSize (currently >= 2**9).
+    await this.initSRSForCircuitSize(0);
+    return await super.acirVerifyMegaHonk(proofBuf, vkBuf);
   }
 
   /**
@@ -83,6 +94,8 @@ export class Barretenberg extends BarretenbergApi {
     // TODO(https://github.com/AztecProtocol/barretenberg/issues/1129): Do slab allocator initialization?
     // await this.commonInitSlabAllocator(circuitSize);
     await this.srsInitSrs(new RawBuffer(crs.getG1Data()), crs.numPoints, new RawBuffer(crs.getG2Data()));
+    this.srsInitialized = true;
+    this.srsSize = Math.max(circuitSize, minSRSSize);
   }
 
   async initSRSClientIVC(srsSize = this.getDefaultSrsSize()): Promise<void> {
@@ -108,7 +121,15 @@ export class Barretenberg extends BarretenbergApi {
   async acirInitSRS(bytecode: Uint8Array, recursive: boolean, honkRecursion: boolean): Promise<void> {
     // eslint-disable-next-line @typescript-eslint/no-unused-vars
     const [_total, subgroupSize] = await this.acirGetCircuitSizes(bytecode, recursive, honkRecursion);
-    return this.initSRSForCircuitSize(subgroupSize);
+    // Only upgrade SRS if needed.
+    await this.ensureSRSAtLeast(subgroupSize);
+  }
+
+  // Ensure SRS is initialized at least to the required size, upgrading if needed.
+  private async ensureSRSAtLeast(requiredSize: number): Promise<void> {
+    if (!this.srsInitialized || this.srsSize < requiredSize) {
+      await this.initSRSForCircuitSize(requiredSize);
+    }
   }
 
   async destroy() {

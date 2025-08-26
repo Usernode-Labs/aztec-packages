@@ -1,0 +1,13 @@
+[package]
+name = "hash_sign_poseidon2_experimental"
+type = "bin"
+authors = ["aztec-agent"]
+
+[dependencies]
+# EXPERIMENTAL Poseidon2 Schnorr verifier (no Pedersen prehash)
+# Note: This is non-standard and requires security analysis before production use
+
+# Note: std is provided by the default Noir toolchain. If your setup requires an explicit
+# stdlib dependency, you can also add it here pinned to a version compatible with your nargo.
+# std = ">=0.31.0"
+# std = { git = "https://github.com/noir-lang/noir_stdlib", tag = "v0.31.0" }
