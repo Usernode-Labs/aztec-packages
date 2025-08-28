@@ -269,3 +269,11 @@ if(WASM)
         )
     endif()
 endif()
+# Rust FFI shim library
+add_library(
+    bb_rust_api
+    STATIC
+    bb_rust_api.cpp
+)
+
+target_link_libraries(bb_rust_api PRIVATE barretenberg)

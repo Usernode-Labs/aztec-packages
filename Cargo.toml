@@ -1,0 +1,7 @@
+[workspace]
+members = [
+  "crates/aztec-barretenberg-sys-rs",
+  "crates/aztec-barretenberg-rs",
+]
+resolver = "2"
+
