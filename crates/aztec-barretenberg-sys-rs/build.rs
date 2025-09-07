@@ -7,7 +7,13 @@ fn main() {
     let crate_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap());
     let repo_root = crate_dir.parent().unwrap().parent().unwrap();
     let bb_cpp_src = repo_root.join("barretenberg/cpp/src");
-    let bb_lib_dir = repo_root.join("barretenberg/cpp/build/lib");
+    // Allow overriding build and lib dirs via env for external/prebuilt setups
+    let bb_build_dir = std::env::var_os("BB_BUILD_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| repo_root.join("barretenberg/cpp/build"));
+    let bb_lib_dir = std::env::var_os("BB_LIB_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| bb_build_dir.join("lib"));
     // Ensure we rebuild if the shim changes.
     println!(
         "cargo:rerun-if-changed={}",
@@ -22,8 +28,8 @@ fn main() {
         .flag("-Wno-error")
         .flag_if_supported("-Wno-unused-parameter")
         .include(&bb_cpp_src)
-        .include(repo_root.join("barretenberg/cpp/build/_deps/msgpack-c/src/msgpack-c/include"))
-        .include(repo_root.join("barretenberg/cpp/build/_deps/tracy-src/public"))
+        .include(bb_build_dir.join("_deps/msgpack-c/src/msgpack-c/include"))
+        .include(bb_build_dir.join("_deps/tracy-src/public"))
         .file(bb_cpp_src.join("bb_rust_api.cpp"))
         .compile("bb_rust_api");
 
