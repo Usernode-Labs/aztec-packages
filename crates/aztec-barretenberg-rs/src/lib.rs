@@ -22,7 +22,7 @@ pub fn set_crs_path(path: impl AsRef<Path>) -> Result<()> {
         use std::ffi::CString;
         let c = CString::new(path.as_ref().to_string_lossy().as_bytes()).unwrap();
         aztec_barretenberg_sys_rs::bb_set_crs_path(c.as_ptr());
-        return Ok(());
+        Ok(())
     }
 }
 
@@ -157,7 +157,7 @@ pub mod acvm_exec {
         }
 
         // Prefer Barretenberg-backed solver when available; otherwise fall back to stub.
-        let bb_solver = BarretenbergBlackBoxSolver::default();
+        let bb_solver = BarretenbergBlackBoxSolver;
         let witness_map = if bb_solver.is_supported_environment() {
             run(&bb_solver, &program, initial_witness)?
         } else {
@@ -205,7 +205,7 @@ pub mod acvm_exec {
         }
 
         // Solve with Barretenberg-backed solver
-        let solver = BarretenbergBlackBoxSolver::default();
+        let solver = BarretenbergBlackBoxSolver;
         let mut acvm: ACVM<'_, FE, _> = ACVM::new(
             &solver,
             &func.opcodes,
@@ -265,7 +265,7 @@ impl acvm::blackbox_solver::BlackBoxFunctionSolver<FE> for BarretenbergBlackBoxS
         let mut ys = Vec::with_capacity(n * 32);
         let mut inf = Vec::with_capacity(n);
         for i in 0..n {
-            let x_be = _points[3 * i + 0].to_be_bytes();
+            let x_be = _points[3 * i].to_be_bytes();
             let y_be = _points[3 * i + 1].to_be_bytes();
             let inf_fe = _points[3 * i + 2];
             xs.extend_from_slice(&x_be[x_be.len() - 32..]);
@@ -439,5 +439,33 @@ pub fn grumpkin_derive_pubkey(sk32: &[u8; 32]) -> Result<([u8;32],[u8;32])> {
         let rc = aztec_barretenberg_sys_rs::bb_grumpkin_derive_pubkey(sk32.as_ptr(), x.as_mut_ptr(), y.as_mut_ptr());
         if rc != 0 { return Err(BbError::Failure("grumpkin_derive_pubkey")); }
         Ok((x,y))
+    }
+}
+
+
+pub fn schnorr_blake2s_sign(msg: &[u8], sk32: &[u8; 32]) -> Result<[u8; 64]> {
+    unsafe {
+        let mut sig = [0u8; 64];
+        let rc = aztec_barretenberg_sys_rs::bb_schnorr_blake2s_sign(
+            msg.as_ptr(), msg.len(), sk32.as_ptr(), sig.as_mut_ptr(),
+        );
+        if rc != 0 { return Err(BbError::Failure("schnorr_blake2s_sign")); }
+        Ok(sig)
+    }
+}
+
+pub fn schnorr_blake2s_verify_xy(
+    msg: &[u8],
+    sig64: &[u8; 64],
+    pkx32: &[u8; 32],
+    pky32: &[u8; 32],
+) -> Result<bool> {
+    unsafe {
+        let mut ok = false;
+        let rc = aztec_barretenberg_sys_rs::bb_schnorr_blake2s_verify_xy(
+            msg.as_ptr(), msg.len(), sig64.as_ptr(), pkx32.as_ptr(), pky32.as_ptr(), &mut ok,
+        );
+        if rc != 0 { return Err(BbError::Failure("schnorr_blake2s_verify_xy")); }
+        Ok(ok)
     }
 }

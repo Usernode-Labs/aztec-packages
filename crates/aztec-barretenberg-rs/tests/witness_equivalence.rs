@@ -13,14 +13,15 @@ fn repo_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).parent().unwrap().parent().unwrap().to_path_buf()
 }
 
-fn nargo() -> &'static str {
-    "/home/dan/.nargo/bin/nargo"
+fn nargo() -> std::ffi::OsString {
+    // Resolve Nargo from env var `NARGO` if set, else rely on PATH.
+    std::env::var_os("NARGO").unwrap_or_else(|| std::ffi::OsString::from("nargo"))
 }
 
 fn ensure_program(dir: &Path) {
     let pj = dir.join("target/program.json");
     if !pj.exists() {
-        let mut cmd = std::process::Command::new(nargo());
+    let mut cmd = std::process::Command::new(nargo());
         let status = cmd
             .current_dir(dir)
             .arg("compile")
@@ -35,7 +36,7 @@ fn ensure_program(dir: &Path) {
 fn ensure_witness(dir: &Path) -> bool {
     let tg = dir.join("target");
     if !tg.join("witness.gz").exists() {
-        let mut cmd = std::process::Command::new(nargo());
+    let mut cmd = std::process::Command::new(nargo());
         let status = cmd
             .current_dir(dir)
             .arg("execute")
@@ -153,7 +154,7 @@ fn acvm_compute_witness_from_inputs(inputs: Vec<FE>, program: &Program<FE>) -> V
         initial.insert(Witness(ids[i]), fe);
     }
 
-    let solver = bb::BarretenbergBlackBoxSolver::default();
+    let solver = bb::BarretenbergBlackBoxSolver;
     let func = &program.functions[0];
     let mut acvm: ACVM<'_, FE, _> = ACVM::new(
         &solver,
@@ -232,7 +233,7 @@ fn witness_equivalence_acvm_vs_nargo_all_examples() {
         let mut bad_proof = proof.0.clone();
         if !bad_proof.is_empty() { bad_proof[0] ^= 0x55; }
         let ok = bb::verify_mega_honk(&bad_proof, &vk.0);
-        match ok { Ok(v) => assert!(!v, "tampered proof verified for {:?}", proj), Err(_) => {} }
+        if let Ok(v) = ok { assert!(!v, "tampered proof verified for {:?}", proj); }
 
         checked += 1;
     }

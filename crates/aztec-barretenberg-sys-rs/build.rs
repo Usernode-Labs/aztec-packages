@@ -20,9 +20,10 @@ fn main() {
         .flag("-std=c++20")
         .flag("-fPIC")
         .flag("-Wno-error")
+        .flag_if_supported("-Wno-unused-parameter")
         .include(&bb_cpp_src)
-        .include(&repo_root.join("barretenberg/cpp/build/_deps/msgpack-c/src/msgpack-c/include"))
-        .include(&repo_root.join("barretenberg/cpp/build/_deps/tracy-src/public"))
+        .include(repo_root.join("barretenberg/cpp/build/_deps/msgpack-c/src/msgpack-c/include"))
+        .include(repo_root.join("barretenberg/cpp/build/_deps/tracy-src/public"))
         .file(bb_cpp_src.join("bb_rust_api.cpp"))
         .compile("bb_rust_api");
 

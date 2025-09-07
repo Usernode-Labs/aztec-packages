@@ -79,7 +79,14 @@ extern "C" {
         sig64_out: *mut u8,
     ) -> c_int;
 
-    pub fn bb_schnorr_pedersen_verify_xy(
+    pub fn bb_schnorr_blake2s_sign(
+        msg: *const u8,
+        msg_len: size_t,
+        sk32: *const u8,
+        sig64_out: *mut u8,
+    ) -> c_int;
+
+    pub fn bb_schnorr_blake2s_verify_xy(
         msg: *const u8,
         msg_len: size_t,
         sig64: *const u8,
@@ -88,6 +95,16 @@ extern "C" {
         out_ok: *mut bool,
     ) -> c_int;
 
+
+
+    pub fn bb_schnorr_pedersen_verify_xy(
+        msg: *const u8,
+        msg_len: size_t,
+        sig64: *const u8,
+        pkx32: *const u8,
+        pky32: *const u8,
+        out_ok: *mut bool,
+    ) -> c_int;
     pub fn bb_grumpkin_derive_pubkey(
         sk32: *const u8,
         out_x_be: *mut u8,
@@ -139,4 +156,25 @@ extern "C" {
         out_y_be: *mut u8,
         out_infinite: *mut u8,
     ) -> c_int;
+
+    // BN254 Fr arithmetic helpers (32-byte big-endian inputs/outputs)
+    pub fn bb_fr_add(
+        a32: *const u8,
+        b32: *const u8,
+        out_ptr: *mut *mut u8,
+        out_len: *mut size_t,
+    ) -> c_int;
+    pub fn bb_fr_sub(
+        a32: *const u8,
+        b32: *const u8,
+        out_ptr: *mut *mut u8,
+        out_len: *mut size_t,
+    ) -> c_int;
+    pub fn bb_fr_mul(
+        a32: *const u8,
+        b32: *const u8,
+        out_ptr: *mut *mut u8,
+        out_len: *mut size_t,
+    ) -> c_int;
+    pub fn bb_fr_cmp(a32: *const u8, b32: *const u8) -> c_int;
 }
