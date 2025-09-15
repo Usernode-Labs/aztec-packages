@@ -337,8 +337,9 @@ int bb_merge_mega(const uint8_t* proof_a,
     }
 }
 
-// Temporary batch-merge placeholder: delegates to merge_mega. A dedicated circuit that
-// constrains parent = H2(left,right) and enforces a VK allowlist should replace this.
+// Batch-merge using a dedicated circuit that computes and constrains
+// parent = Poseidon2(tag=20, left, right) and publishes binding data. VK allowlist
+// is expected to be enforced off-circuit via published VK hashes.
 int bb_batch_merge_h2(const uint8_t* proof_a,
                   size_t len_a,
                   const uint8_t* vk_a,

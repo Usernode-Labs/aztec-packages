@@ -51,8 +51,6 @@ MergeResult merge(const std::vector<uint8_t>& proofA_fields_buf,
     // Deserialize inputs
     std::vector<bb::fr> proofA_fields = many_from_buffer<bb::fr>(proofA_fields_buf);
     std::vector<bb::fr> proofB_fields = many_from_buffer<bb::fr>(proofB_fields_buf);
-    auto honkA = from_buffer<bb::HonkProof>(proofA_fields_buf);
-    auto honkB = from_buffer<bb::HonkProof>(proofB_fields_buf);
     auto vkA_native = from_buffer<std::shared_ptr<NativeVK>>(vkA_bytes);
     auto vkB_native = from_buffer<std::shared_ptr<NativeVK>>(vkB_bytes);
 
@@ -72,24 +70,24 @@ MergeResult merge(const std::vector<uint8_t>& proofA_fields_buf,
 
     // No pre-reserved public inputs; we will publish computed binding fields directly.
 
-    // Extract child combiners in-circuit by running a lightweight stdlib Oink parse of the Oink portion
+    // Extract child combiners in-circuit by running a lightweight stdlib Oink parse of the Oink portion,
+    // and ensure the same proof field variables are used consistently across parsing, hashing, and recursive verify.
     using StdlibOink = bb::stdlib::recursion::honk::OinkRecursiveVerifier_<RecFlavor>;
-    // helper already declared above
-    // Some environments serialize the Oink portion as a vector<fr>; parse that form for stdlib Oink consumption.
-    auto oinkA_fields_native = from_buffer<std::vector<bb::fr>>(proofA_fields_buf);
-    auto oinkB_fields_native = from_buffer<std::vector<bb::fr>>(proofB_fields_buf);
     auto to_ff_local = [&](const std::vector<bb::fr>& xs) {
         std::vector<typename RecFlavor::FF> out;
         out.reserve(xs.size());
         for (auto& x : xs) { out.emplace_back(RecFlavor::FF::from_witness(&builder, x)); }
         return out;
     };
+    // Create one shared vector of stdlib field variables for each proof
+    auto proofA_fields_ff = to_ff_local(proofA_fields);
+    auto proofB_fields_ff = to_ff_local(proofB_fields);
     RecVerifier rec_for_oinkA{ &builder, vkA_and_hash };
     StdlibOink oinkA_parse{ &builder, rec_for_oinkA.key };
-    oinkA_parse.verify_proof(to_ff_local(oinkA_fields_native));
+    oinkA_parse.verify_proof(proofA_fields_ff);
     RecVerifier rec_for_oinkB{ &builder, vkB_and_hash };
     StdlibOink oinkB_parse{ &builder, rec_for_oinkB.key };
-    oinkB_parse.verify_proof(to_ff_local(oinkB_fields_native));
+    oinkB_parse.verify_proof(proofB_fields_ff);
     auto left_leaf = oinkA_parse.public_inputs[0];
     auto right_leaf = oinkB_parse.public_inputs[0];
     bb::fr left_native = left_leaf.get_value();
@@ -118,14 +116,8 @@ MergeResult merge(const std::vector<uint8_t>& proofA_fields_buf,
     };
     // Bind each child proof to public outputs by hashing the exact field encoding consumed by recursion.
     // Domain tag 60 disambiguates proof-field hashes from other Poseidon2 usages.
-    auto to_ff = [&](const std::vector<bb::fr>& xs) {
-        std::vector<typename RecFlavor::FF> out;
-        out.reserve(xs.size());
-        for (auto& x : xs) { out.emplace_back(RecFlavor::FF::from_witness(&builder, x)); }
-        return out;
-    };
-    auto proofA_hash = hash_fields(to_ff(proofA_fields), 60); // PROOF_TAG=60
-    auto proofB_hash = hash_fields(to_ff(proofB_fields), 60);
+    auto proofA_hash = hash_fields(proofA_fields_ff, 60); // PROOF_TAG=60
+    auto proofB_hash = hash_fields(proofB_fields_ff, 60);
     // Native equivalents for cross-check
     auto native_hash_from_fields = [&](const std::vector<bb::fr>& xs, uint32_t tag_val) {
         std::vector<bb::fr> pre;
@@ -158,8 +150,10 @@ MergeResult merge(const std::vector<uint8_t>& proofA_fields_buf,
     // Now run recursive verifications (these may finalize via DefaultIO internally)
     RecVerifier verifierA{ &builder, vkA_and_hash };
     RecVerifier verifierB{ &builder, vkB_and_hash };
-    (void)verifierA.template verify_proof<NoopIO<Builder>>(bb::stdlib::Proof<Builder>(builder, honkA));
-    (void)verifierB.template verify_proof<NoopIO<Builder>>(bb::stdlib::Proof<Builder>(builder, honkB));
+    typename RecVerifier::StdlibProof stdlib_proofA(proofA_fields_ff);
+    typename RecVerifier::StdlibProof stdlib_proofB(proofB_fields_ff);
+    (void)verifierA.template verify_proof<NoopIO<Builder>>(stdlib_proofA);
+    (void)verifierB.template verify_proof<NoopIO<Builder>>(stdlib_proofB);
 
     // Do not append DefaultIO here; we keep only inner public inputs for this circuit.
 
