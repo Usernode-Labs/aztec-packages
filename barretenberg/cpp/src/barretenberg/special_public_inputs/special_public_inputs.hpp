@@ -108,3 +108,5 @@ class RollupIO {
 };
 
 } // namespace bb
+
+// (No native NoopIO here; the stdlib templated NoopIO is used for recursive contexts.)

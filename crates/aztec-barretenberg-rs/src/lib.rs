@@ -84,6 +84,42 @@ pub fn verify_mega_honk(_proof: &[u8], _vk: &[u8]) -> Result<bool> {
     }
 }
 
+/// Return Mega proof public inputs as concatenated 32-byte big-endian field bytes.
+/// The number of public inputs is determined from the provided VK.
+pub fn mega_public_inputs(_proof: &[u8], _vk: &[u8]) -> Result<Vec<u8>> {
+    unsafe {
+        let mut p_ptr: *mut u8 = std::ptr::null_mut();
+        let mut p_len: usize = 0;
+        let rc = aztec_barretenberg_sys_rs::bb_mh_public_inputs(
+            _proof.as_ptr(), _proof.len(), _vk.as_ptr(), _vk.len(), &mut p_ptr, &mut p_len,
+        );
+        if rc != 0 { return Err(BbError::Failure("mega_public_inputs")); }
+        let out = std::slice::from_raw_parts(p_ptr, p_len).to_vec();
+        aztec_barretenberg_sys_rs::bb_free(p_ptr);
+        Ok(out)
+    }
+}
+
+/// Compute the Mega VK hash (32-byte big-endian field element) from VK bytes.
+pub fn mega_vk_hash(_vk: &[u8]) -> Result<[u8; 32]> {
+    unsafe {
+        let mut out = [0u8; 32];
+        let rc = aztec_barretenberg_sys_rs::bb_mh_vk_hash(_vk.as_ptr(), _vk.len(), out.as_mut_ptr());
+        if rc != 0 { return Err(BbError::Failure("mega_vk_hash")); }
+        Ok(out)
+    }
+}
+
+/// Compute Poseidon2 hash (with a domain tag) over the proof fields parsed from bytes.
+pub fn mega_proof_fields_hash(_proof: &[u8], tag: u32) -> Result<[u8; 32]> {
+    unsafe {
+        let mut out = [0u8; 32];
+        let rc = aztec_barretenberg_sys_rs::bb_mh_proof_fields_hash(_proof.as_ptr(), _proof.len(), tag, out.as_mut_ptr());
+        if rc != 0 { return Err(BbError::Failure("mega_proof_fields_hash")); }
+        Ok(out)
+    }
+}
+
 pub fn merge_mega(_pa: &[u8], _vka: &[u8], _pb: &[u8], _vkb: &[u8]) -> Result<(Proof, Vk)> {
     unsafe {
         let mut p_ptr: *mut u8 = std::ptr::null_mut();
@@ -96,6 +132,32 @@ pub fn merge_mega(_pa: &[u8], _vka: &[u8], _pb: &[u8], _vkb: &[u8]) -> Result<(P
             &mut p_ptr, &mut p_len, &mut v_ptr, &mut v_len,
         );
         if rc != 0 { return Err(BbError::Failure("merge_mega")); }
+        let proof = Proof(std::slice::from_raw_parts(p_ptr, p_len).to_vec());
+        let vk = Vk(std::slice::from_raw_parts(v_ptr, v_len).to_vec());
+        aztec_barretenberg_sys_rs::bb_free(p_ptr);
+        aztec_barretenberg_sys_rs::bb_free(v_ptr);
+        Ok((proof, vk))
+    }
+}
+
+/// Batch-merge two MegaHonk proofs and emit a merged proof+VK. This is currently
+/// an alias to `merge_mega` (structural merge only). A dedicated batch-merge circuit
+/// that computes and constrains `H2(left,right)` as public output will replace this.
+pub fn batch_merge_h2(_pa: &[u8], _vka: &[u8], _pb: &[u8], _vkb: &[u8]) -> Result<(Proof, Vk)> {
+    unsafe {
+        let mut p_ptr: *mut u8 = std::ptr::null_mut();
+        let mut p_len: usize = 0;
+        let mut v_ptr: *mut u8 = std::ptr::null_mut();
+        let mut v_len: usize = 0;
+        let rc = aztec_barretenberg_sys_rs::bb_batch_merge_h2(
+            _pa.as_ptr(), _pa.len(),
+            _vka.as_ptr(), _vka.len(),
+            _pb.as_ptr(), _pb.len(),
+            _vkb.as_ptr(), _vkb.len(),
+            &mut p_ptr, &mut p_len,
+            &mut v_ptr, &mut v_len,
+        );
+        if rc != 0 { return Err(BbError::Failure("batch_merge_h2")); }
         let proof = Proof(std::slice::from_raw_parts(p_ptr, p_len).to_vec());
         let vk = Vk(std::slice::from_raw_parts(v_ptr, v_len).to_vec());
         aztec_barretenberg_sys_rs::bb_free(p_ptr);

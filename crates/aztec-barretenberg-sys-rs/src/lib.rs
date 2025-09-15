@@ -33,7 +33,44 @@ extern "C" {
         out_ok: *mut bool,
     ) -> c_int;
 
+    pub fn bb_mh_public_inputs(
+        proof: *const u8,
+        proof_len: size_t,
+        vk: *const u8,
+        vk_len: size_t,
+        out_ptr: *mut *mut u8,
+        out_len: *mut size_t,
+    ) -> c_int;
+
+    pub fn bb_mh_vk_hash(
+        vk: *const u8,
+        vk_len: size_t,
+        out_be32: *mut u8,
+    ) -> c_int;
+
+    pub fn bb_mh_proof_fields_hash(
+        proof: *const u8,
+        proof_len: size_t,
+        tag: u32,
+        out_be32: *mut u8,
+    ) -> c_int;
+
     pub fn bb_merge_mega(
+        proof_a: *const u8,
+        len_a: size_t,
+        vk_a: *const u8,
+        len_vk_a: size_t,
+        proof_b: *const u8,
+        len_b: size_t,
+        vk_b: *const u8,
+        len_vk_b: size_t,
+        out_merged_proof: *mut *mut u8,
+        out_merged_proof_len: *mut size_t,
+        out_merged_vk: *mut *mut u8,
+        out_merged_vk_len: *mut size_t,
+    ) -> c_int;
+
+    pub fn bb_batch_merge_h2(
         proof_a: *const u8,
         len_a: size_t,
         vk_a: *const u8,

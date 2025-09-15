@@ -19,19 +19,28 @@ fn main() {
         "cargo:rerun-if-changed={}",
         bb_cpp_src.join("bb_rust_api.cpp").display()
     );
+    // Also rerun if the prebuilt static archive changes (to relink against latest C++ code).
+    println!(
+        "cargo:rerun-if-changed={}",
+        bb_lib_dir.join("libbarretenberg.a").display()
+    );
     assert!(bb_lib_dir.exists(), "Expected prebuilt barretenberg at {:?}", bb_lib_dir);
 
-    cc::Build::new()
+    let mut cc_build = cc::Build::new();
+    cc_build
         .cpp(true)
         .flag("-std=c++20")
         .flag("-fPIC")
         .flag("-Wno-error")
         .flag_if_supported("-Wno-unused-parameter")
+        // Enable ASan for shim if requested via env SANITIZE=address
+        .flag_if_supported(if env::var("SANITIZE").ok().as_deref() == Some("address") { "-fsanitize=address" } else { "" })
+        .flag_if_supported(if env::var("SANITIZE").ok().as_deref() == Some("address") { "-fno-omit-frame-pointer" } else { "" })
         .include(&bb_cpp_src)
         .include(bb_build_dir.join("_deps/msgpack-c/src/msgpack-c/include"))
         .include(bb_build_dir.join("_deps/tracy-src/public"))
-        .file(bb_cpp_src.join("bb_rust_api.cpp"))
-        .compile("bb_rust_api");
+        .file(bb_cpp_src.join("bb_rust_api.cpp"));
+    cc_build.compile("bb_rust_api");
 
     println!("cargo:rustc-link-search=native={}", bb_lib_dir.display());
     // Group static libs to resolve circular deps in C++ archives
@@ -45,6 +54,10 @@ fn main() {
     println!("cargo:rustc-link-lib=static=ecc");
     println!("cargo:rustc-link-lib=static=crypto_schnorr");
     println!("cargo:rustc-link-arg=-Wl,--end-group");
+    // If ASan is requested, link the sanitizer runtime
+    if env::var("SANITIZE").ok().as_deref() == Some("address") {
+        println!("cargo:rustc-link-lib=asan");
+    }
     // Math lib
     println!("cargo:rustc-link-lib=dylib=m");
     // Standard dependencies

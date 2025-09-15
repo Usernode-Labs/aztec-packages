@@ -164,7 +164,12 @@ template <typename FF_> class CircuitBuilderBase {
      * @details This is used, for example, for special internal public inputs (like pairing inputs) which we want to
      * ensure are placed at the end of the public inputs vector.
      */
-    void finalize_public_inputs() { public_inputs_finalized_ = true; }
+    void finalize_public_inputs() {
+        fprintf(stderr, "[bb][builder] finalize_public_inputs(): before=true?%d, num_pub=%zu\n",
+                public_inputs_finalized_ ? 1 : 0, public_inputs_.size());
+        public_inputs_finalized_ = true;
+        fprintf(stderr, "[bb][builder] finalize_public_inputs(): after=true, num_pub=%zu\n", public_inputs_.size());
+    }
 
     /**
      * @brief Directly initialize the public inputs vector.

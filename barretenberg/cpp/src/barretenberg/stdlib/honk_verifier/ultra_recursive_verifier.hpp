@@ -36,15 +36,20 @@ template <typename Builder> struct UltraRecursiveVerifierOutput {
 
     template <class IO>
     UltraRecursiveVerifierOutput(IO& inputs)
-        : points_accumulator(inputs.pairing_inputs)
     {
+        if constexpr (!(std::is_same_v<IO, NoopIO<Builder>>)) {
+            points_accumulator = inputs.pairing_inputs;
+        }
         if constexpr (std::is_same_v<IO, RollupIO>) {
             ipa_claim = inputs.ipa_claim;
         } else if constexpr (std::is_same_v<IO, HidingKernelIO<Builder>>) {
             ecc_op_tables = inputs.ecc_op_tables;
         } else if constexpr (std::is_same_v<IO, GoblinAvmIO<Builder>>) {
             mega_hash = inputs.mega_hash;
-        } else if constexpr (!std::is_same_v<IO, DefaultIO<Builder>>) {
+        } else if constexpr (std::is_same_v<IO, DefaultIO<Builder>> ||
+                             std::is_same_v<IO, NoopIO<Builder>>) {
+            // No additional outputs to capture
+        } else {
             throw_or_abort("Invalid public input type.");
         }
     }

@@ -47,7 +47,9 @@ UltraVerifier_<Flavor>::UltraVerifierOutput UltraVerifier_<Flavor>::verify_proof
     inputs.reconstruct_from_public(public_inputs);
 
     // Aggregate new pairing points with those reconstructed from the public inputs
-    decider_output.pairing_points.aggregate(inputs.pairing_inputs);
+    if constexpr (!std::is_same_v<IO, NoopIO>) {
+        decider_output.pairing_points.aggregate(inputs.pairing_inputs);
+    }
 
     // Construrct the output
     UltraVerifierOutput output;
@@ -118,6 +120,10 @@ template UltraVerifier_<UltraRollupFlavor>::UltraVerifierOutput UltraVerifier_<U
     RollupIO>(const Proof& proof, const Proof& ipa_proof);
 
 template UltraVerifier_<MegaFlavor>::UltraVerifierOutput UltraVerifier_<MegaFlavor>::verify_proof<DefaultIO>(
+    const Proof& proof, const Proof& ipa_proof);
+
+// Explicit instantiation for NoopIO to support merged proofs that expose no special public inputs
+template UltraVerifier_<MegaFlavor>::UltraVerifierOutput UltraVerifier_<MegaFlavor>::verify_proof<NoopIO>(
     const Proof& proof, const Proof& ipa_proof);
 
 template UltraVerifier_<MegaZKFlavor>::UltraVerifierOutput UltraVerifier_<MegaZKFlavor>::verify_proof<DefaultIO>(

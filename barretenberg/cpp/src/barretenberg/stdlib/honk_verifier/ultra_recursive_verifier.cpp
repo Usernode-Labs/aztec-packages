@@ -185,6 +185,12 @@ template UltraRecursiveVerifier_<bb::MegaRecursiveFlavor_<MegaCircuitBuilder>>::
     verify_proof<DefaultIO<MegaCircuitBuilder>>(
         const UltraRecursiveVerifier_<bb::MegaRecursiveFlavor_<MegaCircuitBuilder>>::StdlibProof& proof);
 
+// MegaRecursiveFlavor_ specialization with NoopIO (for in-circuit recursion without publishing public inputs)
+template UltraRecursiveVerifier_<bb::MegaRecursiveFlavor_<MegaCircuitBuilder>>::Output UltraRecursiveVerifier_<
+    bb::MegaRecursiveFlavor_<MegaCircuitBuilder>>::
+    verify_proof<NoopIO<MegaCircuitBuilder>>(
+        const UltraRecursiveVerifier_<bb::MegaRecursiveFlavor_<MegaCircuitBuilder>>::StdlibProof& proof);
+
 // MegaZKRecursiveFlavor_ specialization with DefaultIO
 template UltraRecursiveVerifier_<bb::MegaZKRecursiveFlavor_<UltraCircuitBuilder>>::Output UltraRecursiveVerifier_<
     bb::MegaZKRecursiveFlavor_<UltraCircuitBuilder>>::

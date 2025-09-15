@@ -146,6 +146,8 @@ template <typename FF_> msgpack::sbuffer CircuitBuilderBase<FF_>::export_circuit
 template <typename FF_> uint32_t CircuitBuilderBase<FF_>::add_public_variable(const FF& in)
 {
     const uint32_t index = add_variable(in);
+    fprintf(stderr, "[bb][builder] add_public_variable(idx=%u): finalized=%d, num_pub=%zu\n",
+            index, public_inputs_finalized_ ? 1 : 0, public_inputs_.size());
     BB_ASSERT_EQ(public_inputs_finalized_, false, "Cannot add to public inputs after they have been finalized.");
     public_inputs_.emplace_back(index);
     return index;
@@ -153,6 +155,8 @@ template <typename FF_> uint32_t CircuitBuilderBase<FF_>::add_public_variable(co
 
 template <typename FF_> uint32_t CircuitBuilderBase<FF_>::set_public_input(const uint32_t witness_index)
 {
+    fprintf(stderr, "[bb][builder] set_public_input(witness=%u): finalized=%d, num_pub=%zu\n",
+            witness_index, public_inputs_finalized_ ? 1 : 0, public_inputs_.size());
     for (const uint32_t public_input : public_inputs()) {
         if (public_input == witness_index) {
             if (!failed()) {

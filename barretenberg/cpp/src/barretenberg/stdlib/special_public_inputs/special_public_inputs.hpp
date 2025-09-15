@@ -50,15 +50,15 @@ std::array<typename bn254<Builder>::Group, Builder::NUM_WIRES> empty_ecc_op_tabl
 class KernelIO {
   public:
     using Builder = MegaCircuitBuilder;   // kernel builder is always Mega
-    using Curve = stdlib::bn254<Builder>; // curve is always bn254
+    using Curve = bb::stdlib::bn254<Builder>; // curve is always bn254
     using G1 = Curve::Group;
     using FF = Curve::ScalarField;
-    using PairingInputs = stdlib::recursion::PairingPoints<Builder>;
+    using PairingInputs = bb::stdlib::recursion::PairingPoints<Builder>;
     // TODO(https://github.com/AztecProtocol/barretenberg/issues/1490): Make PublicInputComponent work with arrays
     using TableCommitments = std::array<G1, Builder::NUM_WIRES>;
 
-    using PublicPoint = stdlib::PublicInputComponent<G1>;
-    using PublicPairingPoints = stdlib::PublicInputComponent<PairingInputs>;
+    using PublicPoint = bb::stdlib::PublicInputComponent<G1>;
+    using PublicPairingPoints = bb::stdlib::PublicInputComponent<PairingInputs>;
 
     PairingInputs pairing_inputs;   // Inputs {P0, P1} to an EC pairing check
     G1 kernel_return_data;          // Commitment to the return data of a kernel circuit
@@ -98,6 +98,7 @@ class KernelIO {
      */
     void set_public()
     {
+        fprintf(stderr, "[bb][IO][KernelIO] set_public() begin\n");
         pairing_inputs.set_public();
         kernel_return_data.set_public();
         app_return_data.set_public();
@@ -108,6 +109,7 @@ class KernelIO {
 
         // Finalize the public inputs to ensure no more public inputs can be added hereafter.
         Builder* builder = pairing_inputs.P0.get_context();
+        fprintf(stderr, "[bb][IO][KernelIO] finalize_public_inputs()\n");
         builder->finalize_public_inputs();
     }
 
@@ -138,11 +140,11 @@ class KernelIO {
 template <typename Builder_> class DefaultIO {
   public:
     using Builder = Builder_;
-    using Curve = stdlib::bn254<Builder>; // curve is always bn254
+    using Curve = bb::stdlib::bn254<Builder>; // curve is always bn254
     using FF = Curve::ScalarField;
-    using PairingInputs = stdlib::recursion::PairingPoints<Builder>;
+    using PairingInputs = bb::stdlib::recursion::PairingPoints<Builder>;
 
-    using PublicPairingPoints = stdlib::PublicInputComponent<PairingInputs>;
+    using PublicPairingPoints = bb::stdlib::PublicInputComponent<PairingInputs>;
 
     PairingInputs pairing_inputs;
 
@@ -167,10 +169,12 @@ template <typename Builder_> class DefaultIO {
      */
     void set_public()
     {
+        fprintf(stderr, "[bb][IO][DefaultIO] set_public() begin\n");
         pairing_inputs.set_public();
 
         // Finalize the public inputs to ensure no more public inputs can be added hereafter.
         Builder* builder = pairing_inputs.P0.get_context();
+        fprintf(stderr, "[bb][IO][DefaultIO] finalize_public_inputs()\n");
         builder->finalize_public_inputs();
     }
 
@@ -187,17 +191,68 @@ template <typename Builder_> class DefaultIO {
 using AppIO = DefaultIO<MegaCircuitBuilder>; // app IO is always Mega
 
 /**
+ * @brief Binding block IO for batch-merge circuits: 7 field elements appended as inner public inputs.
+ * Order: [parent, pl_hash, vkA_hash, pr_hash, vkB_hash, left_combiner, right_combiner].
+ */
+template <typename Builder_> class BindingBlockIO {
+  public:
+    using Builder = Builder_;
+    using Curve = bb::stdlib::bn254<Builder>; // curve is always bn254
+    using FF = typename Curve::ScalarField;
+
+    FF parent;
+    FF pl_hash;
+    FF vkA_hash;
+    FF pr_hash;
+    FF vkB_hash;
+    FF left_combiner;
+    FF right_combiner;
+
+    static constexpr size_t PUBLIC_INPUTS_SIZE = 7 * FF::PUBLIC_INPUTS_SIZE;
+
+    static BindingBlockIO reconstruct_from_public(const std::span<const FF, PUBLIC_INPUTS_SIZE>& limbs)
+    {
+        BindingBlockIO out;
+        // Assume FF::PUBLIC_INPUTS_SIZE == 1 for BN254 fr
+        out.parent = limbs[0];
+        out.pl_hash = limbs[1];
+        out.vkA_hash = limbs[2];
+        out.pr_hash = limbs[3];
+        out.vkB_hash = limbs[4];
+        out.left_combiner = limbs[5];
+        out.right_combiner = limbs[6];
+        return out;
+    }
+
+    void set_public()
+    {
+        fprintf(stderr, "[bb][IO][BindingBlockIO] set_public() begin\n");
+        parent.set_public();
+        pl_hash.set_public();
+        vkA_hash.set_public();
+        pr_hash.set_public();
+        vkB_hash.set_public();
+        left_combiner.set_public();
+        right_combiner.set_public();
+        // Finalize the inner public inputs boundary so subsequent DefaultIO lands after.
+        Builder* builder = parent.get_context();
+        fprintf(stderr, "[bb][IO][BindingBlockIO] finalize_public_inputs()\n");
+        builder->finalize_public_inputs();
+    }
+};
+
+/**
  * @brief The data that is propagated on the public inputs of the inner GoblinAvmRecursiveVerifier circuit
  */
 template <typename Builder_> class GoblinAvmIO {
   public:
     using Builder = Builder_;
-    using Curve = stdlib::bn254<Builder>; // curve is always bn254
+    using Curve = bb::stdlib::bn254<Builder>; // curve is always bn254
     using FF = Curve::ScalarField;
-    using PairingInputs = stdlib::recursion::PairingPoints<Builder>;
+    using PairingInputs = bb::stdlib::recursion::PairingPoints<Builder>;
 
-    using PublicFF = stdlib::PublicInputComponent<FF>;
-    using PublicPairingPoints = stdlib::PublicInputComponent<PairingInputs>;
+    using PublicFF = bb::stdlib::PublicInputComponent<FF>;
+    using PublicPairingPoints = bb::stdlib::PublicInputComponent<PairingInputs>;
 
     FF mega_hash;
     PairingInputs pairing_inputs;
@@ -225,11 +280,13 @@ template <typename Builder_> class GoblinAvmIO {
      */
     void set_public()
     {
+        fprintf(stderr, "[bb][IO][GoblinAvmIO] set_public() begin\n");
         mega_hash.set_public();
         pairing_inputs.set_public();
 
         // Finalize the public inputs to ensure no more public inputs can be added hereafter.
         Builder* builder = pairing_inputs.P0.get_context();
+        fprintf(stderr, "[bb][IO][GoblinAvmIO] finalize_public_inputs()\n");
         builder->finalize_public_inputs();
     }
 };
@@ -240,14 +297,14 @@ template <typename Builder_> class GoblinAvmIO {
 template <class Builder_> class HidingKernelIO {
   public:
     using Builder = Builder_;
-    using Curve = stdlib::bn254<Builder>; // curve is always bn254
+    using Curve = bb::stdlib::bn254<Builder>; // curve is always bn254
     using G1 = Curve::Group;
     using FF = Curve::ScalarField;
-    using PairingInputs = stdlib::recursion::PairingPoints<Builder>;
+    using PairingInputs = bb::stdlib::recursion::PairingPoints<Builder>;
     using TableCommitments = std::array<G1, Builder::NUM_WIRES>;
 
-    using PublicPoint = stdlib::PublicInputComponent<G1>;
-    using PublicPairingPoints = stdlib::PublicInputComponent<PairingInputs>;
+    using PublicPoint = bb::stdlib::PublicInputComponent<G1>;
+    using PublicPairingPoints = bb::stdlib::PublicInputComponent<PairingInputs>;
 
     PairingInputs pairing_inputs;   // Inputs {P0, P1} to an EC pairing check
     TableCommitments ecc_op_tables; // commitments to merged tables obtained from final Merge verification
@@ -278,6 +335,7 @@ template <class Builder_> class HidingKernelIO {
      */
     void set_public()
     {
+        fprintf(stderr, "[bb][IO][HidingKernelIO] set_public() begin\n");
         pairing_inputs.set_public();
         for (auto& commitment : ecc_op_tables) {
             commitment.set_public();
@@ -285,6 +343,7 @@ template <class Builder_> class HidingKernelIO {
 
         // Finalize the public inputs to ensure no more public inputs can be added hereafter.
         Builder* builder = pairing_inputs.P0.get_context();
+        fprintf(stderr, "[bb][IO][HidingKernelIO] finalize_public_inputs()\n");
         builder->finalize_public_inputs();
     }
 
@@ -318,13 +377,13 @@ template <class Builder_> class HidingKernelIO {
 class RollupIO {
   public:
     using Builder = UltraCircuitBuilder;  // rollup circuits are always Ultra
-    using Curve = stdlib::bn254<Builder>; // curve is always bn254
-    using FF = stdlib::bn254<Builder>::ScalarField;
-    using PairingInputs = stdlib::recursion::PairingPoints<Builder>;
-    using IpaClaim = OpeningClaim<stdlib::grumpkin<Builder>>;
+    using Curve = bb::stdlib::bn254<Builder>; // curve is always bn254
+    using FF = bb::stdlib::bn254<Builder>::ScalarField;
+    using PairingInputs = bb::stdlib::recursion::PairingPoints<Builder>;
+    using IpaClaim = OpeningClaim<bb::stdlib::grumpkin<Builder>>;
 
-    using PublicPairingPoints = stdlib::PublicInputComponent<PairingInputs>;
-    using PublicIpaClaim = stdlib::PublicInputComponent<IpaClaim>;
+    using PublicPairingPoints = bb::stdlib::PublicInputComponent<PairingInputs>;
+    using PublicIpaClaim = bb::stdlib::PublicInputComponent<IpaClaim>;
 
     PairingInputs pairing_inputs;
     IpaClaim ipa_claim;
@@ -351,11 +410,13 @@ class RollupIO {
      */
     void set_public()
     {
+        fprintf(stderr, "[bb][IO][RollupIO] set_public() begin\n");
         pairing_inputs.set_public();
         ipa_claim.set_public();
 
         // Finalize the public inputs to ensure no more public inputs can be added hereafter.
         Builder* builder = pairing_inputs.P0.get_context();
+        fprintf(stderr, "[bb][IO][RollupIO] finalize_public_inputs()\n");
         builder->finalize_public_inputs();
     }
 
@@ -366,10 +427,25 @@ class RollupIO {
     static void add_default(Builder& builder)
     {
         PairingInputs::add_default_to_public_inputs(builder);
-        auto [stdlib_opening_claim, ipa_proof] = IPA<grumpkin<Builder>>::create_fake_ipa_claim_and_proof(builder);
+        auto [stdlib_opening_claim, ipa_proof] = IPA<bb::stdlib::grumpkin<Builder>>::create_fake_ipa_claim_and_proof(builder);
         stdlib_opening_claim.set_public();
         builder.ipa_proof = ipa_proof;
     };
 };
 
 } // namespace bb::stdlib::recursion::honk
+/**
+ * @brief Noop IO: publishes no public inputs. Useful for recursive verification that shouldn't append DefaultIO.
+ */
+template <typename Builder_> class NoopIO {
+  public:
+    using Builder = Builder_;
+    using Curve = bb::stdlib::bn254<Builder>;
+    using FF = typename Curve::ScalarField;
+
+    static constexpr size_t PUBLIC_INPUTS_SIZE = 0;
+
+    void reconstruct_from_public(const std::vector<FF>&) {}
+    void set_public() {}
+    static void add_default(Builder&) {}
+};
