@@ -140,20 +140,21 @@ pub fn merge_mega(_pa: &[u8], _vka: &[u8], _pb: &[u8], _vkb: &[u8]) -> Result<(P
     }
 }
 
-/// Batch-merge two MegaHonk proofs and emit a merged proof+VK. This is currently
-/// an alias to `merge_mega` (structural merge only). A dedicated batch-merge circuit
-/// that computes and constrains `H2(left,right)` as public output will replace this.
-pub fn batch_merge_h2(_pa: &[u8], _vka: &[u8], _pb: &[u8], _vkb: &[u8]) -> Result<(Proof, Vk)> {
+/// Batch-merge two MegaHonk proofs using a circuit that computes and constrains
+/// `parent = Poseidon2(tag=20, left, right)` as an inner public input and publishes
+/// binding data (proof-field hashes and VK hashes). VK allowlisting is enforced
+/// off-circuit via the published VK hashes.
+pub fn batch_merge_h2(pa: &[u8], vka: &[u8], pb: &[u8], vkb: &[u8]) -> Result<(Proof, Vk)> {
     unsafe {
         let mut p_ptr: *mut u8 = std::ptr::null_mut();
         let mut p_len: usize = 0;
         let mut v_ptr: *mut u8 = std::ptr::null_mut();
         let mut v_len: usize = 0;
         let rc = aztec_barretenberg_sys_rs::bb_batch_merge_h2(
-            _pa.as_ptr(), _pa.len(),
-            _vka.as_ptr(), _vka.len(),
-            _pb.as_ptr(), _pb.len(),
-            _vkb.as_ptr(), _vkb.len(),
+            pa.as_ptr(), pa.len(),
+            vka.as_ptr(), vka.len(),
+            pb.as_ptr(), pb.len(),
+            vkb.as_ptr(), vkb.len(),
             &mut p_ptr, &mut p_len,
             &mut v_ptr, &mut v_len,
         );
