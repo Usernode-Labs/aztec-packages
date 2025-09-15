@@ -766,25 +766,6 @@ int bb_schnorr_pedersen_sign(const uint8_t* msg,
 }
 
 
-int bb_schnorr_pedersen_verify(const uint8_t* msg,
-                               size_t msg_len,
-                               const uint8_t sig64[64],
-                               const uint8_t pk32[32],
-                               bool* out_ok)
-{
-    try {
-        std::string message(reinterpret_cast<const char*>(msg), msg_len);
-        uint64_t xl[4];
-        be32_to_le_limbs(pk32, xl);
-        bb::grumpkin::fq x(xl[0], xl[1], xl[2], xl[3]);
-        // Recompute y from signature? We only have x; our examples provide both x and y. Provide verify_xy variant instead.
-        (void)sig64; (void)x; (void)out_ok;
-        return 2;
-    } catch (...) {
-        return 1;
-    }
-}
-
 int bb_schnorr_pedersen_verify_xy(const uint8_t* msg,
                                   size_t msg_len,
                                   const uint8_t sig64[64],
