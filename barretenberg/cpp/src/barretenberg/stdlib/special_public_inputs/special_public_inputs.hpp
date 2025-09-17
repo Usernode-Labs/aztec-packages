@@ -208,20 +208,26 @@ template <typename Builder_> class BindingBlockIO {
     FF left_combiner;
     FF right_combiner;
 
+    using PublicFF = bb::stdlib::PublicInputComponent<FF>;
+
     static constexpr size_t PUBLIC_INPUTS_SIZE = 7 * FF::PUBLIC_INPUTS_SIZE;
 
-    static BindingBlockIO reconstruct_from_public(const std::span<const FF, PUBLIC_INPUTS_SIZE>& limbs)
+    void reconstruct_from_public(const std::vector<FF>& public_inputs)
     {
-        BindingBlockIO out;
-        // Assume FF::PUBLIC_INPUTS_SIZE == 1 for BN254 fr
-        out.parent = limbs[0];
-        out.pl_hash = limbs[1];
-        out.vkA_hash = limbs[2];
-        out.pr_hash = limbs[3];
-        out.vkB_hash = limbs[4];
-        out.left_combiner = limbs[5];
-        out.right_combiner = limbs[6];
-        return out;
+        uint32_t index = static_cast<uint32_t>(public_inputs.size() - PUBLIC_INPUTS_SIZE);
+        parent = PublicFF::reconstruct(public_inputs, PublicComponentKey{ index });
+        index += FF::PUBLIC_INPUTS_SIZE;
+        pl_hash = PublicFF::reconstruct(public_inputs, PublicComponentKey{ index });
+        index += FF::PUBLIC_INPUTS_SIZE;
+        vkA_hash = PublicFF::reconstruct(public_inputs, PublicComponentKey{ index });
+        index += FF::PUBLIC_INPUTS_SIZE;
+        pr_hash = PublicFF::reconstruct(public_inputs, PublicComponentKey{ index });
+        index += FF::PUBLIC_INPUTS_SIZE;
+        vkB_hash = PublicFF::reconstruct(public_inputs, PublicComponentKey{ index });
+        index += FF::PUBLIC_INPUTS_SIZE;
+        left_combiner = PublicFF::reconstruct(public_inputs, PublicComponentKey{ index });
+        index += FF::PUBLIC_INPUTS_SIZE;
+        right_combiner = PublicFF::reconstruct(public_inputs, PublicComponentKey{ index });
     }
 
     void set_public()

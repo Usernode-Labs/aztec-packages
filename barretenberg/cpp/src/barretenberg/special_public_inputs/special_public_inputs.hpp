@@ -39,6 +39,32 @@ class DefaultIO {
     }
 };
 
+class BindingBlockIO {
+  public:
+    using FF = curve::BN254::ScalarField;
+    static constexpr size_t PUBLIC_INPUTS_SIZE = 7;
+
+    FF parent;
+    FF pl_hash;
+    FF vkA_hash;
+    FF pr_hash;
+    FF vkB_hash;
+    FF left_combiner;
+    FF right_combiner;
+
+    void reconstruct_from_public(const std::vector<FF>& public_inputs)
+    {
+        size_t index = public_inputs.size() - PUBLIC_INPUTS_SIZE;
+        parent = public_inputs[index++];
+        pl_hash = public_inputs[index++];
+        vkA_hash = public_inputs[index++];
+        pr_hash = public_inputs[index++];
+        vkB_hash = public_inputs[index++];
+        left_combiner = public_inputs[index++];
+        right_combiner = public_inputs[index++];
+    }
+};
+
 /**
  * @brief Manages the data that is propagated on the public inputs of of a hiding kernel circuit
  */

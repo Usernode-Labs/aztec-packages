@@ -12,24 +12,6 @@
 
 namespace bb::batch_merge_h2 {
 
-[[maybe_unused]] static bb::fr fr_from_be32(const std::array<uint8_t, 32>& be)
-{
-    auto be32_to_le_limbs = [](const uint8_t* in_be, uint64_t out_le[4]) {
-        for (size_t i = 0; i < 4; ++i) {
-            size_t off = 24 - i * 8;
-            uint64_t limb = 0;
-            for (size_t j = 0; j < 8; ++j) {
-                limb = (limb << 8) | in_be[off + j];
-            }
-            out_le[i] = limb;
-        }
-    };
-    uint64_t limbs[4];
-    be32_to_le_limbs(be.data(), limbs);
-    bb::fr v(limbs[0], limbs[1], limbs[2], limbs[3]);
-    return v.to_montgomery_form();
-}
-
 // Hard-coded allowlist entries (bn254 Fr big-endian). Populate from tools/vk_hash output.
 [[maybe_unused]] static const std::array<uint8_t, 32> VK_SPEND_BE32 = {
     0x14,0xf1,0xee,0x95,0xf1,0x9f,0x73,0xa2,0x0a,0xa7,0xb7,0xc8,0x41,0x46,0xdd,0x0f,
@@ -49,8 +31,8 @@ MergeResult merge(const std::vector<uint8_t>& proofA_fields_buf,
     using RecVerifier = bb::stdlib::recursion::honk::UltraRecursiveVerifier_<RecFlavor>;
 
     // Deserialize inputs
-    std::vector<bb::fr> proofA_fields = many_from_buffer<bb::fr>(proofA_fields_buf);
-    std::vector<bb::fr> proofB_fields = many_from_buffer<bb::fr>(proofB_fields_buf);
+    std::vector<bb::fr> proofA_fields = from_buffer<std::vector<bb::fr>>(proofA_fields_buf);
+    std::vector<bb::fr> proofB_fields = from_buffer<std::vector<bb::fr>>(proofB_fields_buf);
     auto vkA_native = from_buffer<std::shared_ptr<NativeVK>>(vkA_bytes);
     auto vkB_native = from_buffer<std::shared_ptr<NativeVK>>(vkB_bytes);
 
@@ -102,6 +84,7 @@ MergeResult merge(const std::vector<uint8_t>& proofA_fields_buf,
 
     bb::fr parent_native = bb::crypto::Poseidon2<bb::crypto::Poseidon2Bn254ScalarFieldParams>::hash(
         std::vector<bb::fr>{ bb::fr(uint256_t(20)), left_native, right_native });
+
     //
     auto parent_expect = RecFlavor::FF::from_witness(&builder, parent_native);
     parent_expect.assert_equal(parent);
@@ -137,15 +120,16 @@ MergeResult merge(const std::vector<uint8_t>& proofA_fields_buf,
     // Use the native vk hashes already constructed for recursive verification
     // (vkA_hash_ff and vkB_hash_ff)
 
-    // Publish binding block as public inputs in canonical order and finalize boundary.
-    parent_expect.set_public();
-    proofA_hash.set_public();
-    vkA_hash_ff.set_public();
-    proofB_hash.set_public();
-    vkB_hash_ff.set_public();
-    left_leaf.set_public();
-    right_leaf.set_public();
-    builder.finalize_public_inputs();
+    using BindingIO = bb::stdlib::recursion::honk::BindingBlockIO<Builder>;
+    BindingIO binding_block;
+    binding_block.parent = parent_expect;
+    binding_block.pl_hash = proofA_hash;
+    binding_block.vkA_hash = vkA_hash_ff;
+    binding_block.pr_hash = proofB_hash;
+    binding_block.vkB_hash = vkB_hash_ff;
+    binding_block.left_combiner = left_leaf;
+    binding_block.right_combiner = right_leaf;
+    binding_block.set_public();
 
     // Now run recursive verifications (these may finalize via DefaultIO internally)
     RecVerifier verifierA{ &builder, vkA_and_hash };

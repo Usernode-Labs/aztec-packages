@@ -108,20 +108,6 @@ UltraRecursiveVerifier_<Flavor>::Output UltraRecursiveVerifier_<Flavor>::verify_
         .unshifted = ClaimBatch{ commitments.get_unshifted(), sumcheck_output.claimed_evaluations.get_unshifted() },
         .shifted = ClaimBatch{ commitments.get_to_be_shifted(), sumcheck_output.claimed_evaluations.get_shifted() }
     };
-    const BatchOpeningClaim<Curve> opening_claim =
-        Shplemini::compute_batch_opening_claim(padding_indicator_array,
-                                               claim_batcher,
-                                               sumcheck_output.challenge,
-                                               Commitment::one(builder),
-                                               transcript,
-                                               Flavor::REPEATED_COMMITMENTS,
-                                               Flavor::HasZK,
-                                               &consistency_checked,
-                                               libra_commitments,
-                                               sumcheck_output.claimed_libra_evaluation);
-
-    auto pairing_points = PCS::reduce_verify_batch_opening_claim(opening_claim, transcript);
-
     // Reconstruct the public inputs
     IO inputs;
     inputs.reconstruct_from_public(public_inputs);
@@ -130,8 +116,21 @@ UltraRecursiveVerifier_<Flavor>::Output UltraRecursiveVerifier_<Flavor>::verify_
     Output output(inputs);
     output.ipa_proof = ipa_proof; // Add IPA proof
 
-    // Aggregate new pairing point with the ones reconstructed from the public inputs
-    output.points_accumulator.aggregate(pairing_points);
+    if constexpr (!std::is_same_v<IO, NoopIO<Builder>> && !std::is_same_v<IO, BindingBlockIO<Builder>>) {
+        const BatchOpeningClaim<Curve> opening_claim =
+            Shplemini::compute_batch_opening_claim(padding_indicator_array,
+                                                   claim_batcher,
+                                                   sumcheck_output.challenge,
+                                                   Commitment::one(builder),
+                                                   transcript,
+                                                   Flavor::REPEATED_COMMITMENTS,
+                                                   Flavor::HasZK,
+                                                   &consistency_checked,
+                                                   libra_commitments,
+                                                   sumcheck_output.claimed_libra_evaluation);
+        auto pairing_points = PCS::reduce_verify_batch_opening_claim(opening_claim, transcript);
+        output.points_accumulator.aggregate(pairing_points);
+    }
 
     return output;
 }
@@ -189,6 +188,11 @@ template UltraRecursiveVerifier_<bb::MegaRecursiveFlavor_<MegaCircuitBuilder>>::
 template UltraRecursiveVerifier_<bb::MegaRecursiveFlavor_<MegaCircuitBuilder>>::Output UltraRecursiveVerifier_<
     bb::MegaRecursiveFlavor_<MegaCircuitBuilder>>::
     verify_proof<NoopIO<MegaCircuitBuilder>>(
+        const UltraRecursiveVerifier_<bb::MegaRecursiveFlavor_<MegaCircuitBuilder>>::StdlibProof& proof);
+
+template UltraRecursiveVerifier_<bb::MegaRecursiveFlavor_<MegaCircuitBuilder>>::Output UltraRecursiveVerifier_<
+    bb::MegaRecursiveFlavor_<MegaCircuitBuilder>>::
+    verify_proof<BindingBlockIO<MegaCircuitBuilder>>(
         const UltraRecursiveVerifier_<bb::MegaRecursiveFlavor_<MegaCircuitBuilder>>::StdlibProof& proof);
 
 // MegaZKRecursiveFlavor_ specialization with DefaultIO

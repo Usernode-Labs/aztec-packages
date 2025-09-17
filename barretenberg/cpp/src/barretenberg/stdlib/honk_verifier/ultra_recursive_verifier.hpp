@@ -37,7 +37,7 @@ template <typename Builder> struct UltraRecursiveVerifierOutput {
     template <class IO>
     UltraRecursiveVerifierOutput(IO& inputs)
     {
-        if constexpr (!(std::is_same_v<IO, NoopIO<Builder>>)) {
+        if constexpr (!(std::is_same_v<IO, NoopIO<Builder>> || std::is_same_v<IO, BindingBlockIO<Builder>>)) {
             points_accumulator = inputs.pairing_inputs;
         }
         if constexpr (std::is_same_v<IO, RollupIO>) {
@@ -47,7 +47,8 @@ template <typename Builder> struct UltraRecursiveVerifierOutput {
         } else if constexpr (std::is_same_v<IO, GoblinAvmIO<Builder>>) {
             mega_hash = inputs.mega_hash;
         } else if constexpr (std::is_same_v<IO, DefaultIO<Builder>> ||
-                             std::is_same_v<IO, NoopIO<Builder>>) {
+                             std::is_same_v<IO, NoopIO<Builder>> ||
+                             std::is_same_v<IO, BindingBlockIO<Builder>>) {
             // No additional outputs to capture
         } else {
             throw_or_abort("Invalid public input type.");

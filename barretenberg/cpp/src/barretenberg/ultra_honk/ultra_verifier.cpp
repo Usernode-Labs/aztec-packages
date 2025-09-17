@@ -9,10 +9,29 @@
 #include "barretenberg/commitment_schemes/pairing_points.hpp"
 #include "barretenberg/numeric/bitop/get_msb.hpp"
 #include "barretenberg/special_public_inputs/special_public_inputs.hpp"
+#include "barretenberg/stdlib/special_public_inputs/special_public_inputs.hpp"
 #include "barretenberg/transcript/transcript.hpp"
 #include "barretenberg/ultra_honk/oink_verifier.hpp"
 
 namespace bb {
+
+// Detect IO types that expose pairing_inputs to decide if we should aggregate pairing points.
+template <typename T>
+concept HasPairingInputs = requires(T t) {
+    t.pairing_inputs;
+};
+
+// Native helper for merged proofs that publish only inner binding data. Mirrors the stdlib NoopIO but works with
+// native field elements so we can instantiate the Mega verifier without dragging in circuit types.
+struct MegaNativeNoopIO {
+    using FF = MegaFlavor::FF;
+    static constexpr size_t PUBLIC_INPUTS_SIZE = 0;
+
+    void reconstruct_from_public(const std::vector<FF>&) {}
+    void set_public() {}
+    template <class Builder> static void add_default(Builder&) {}
+};
+
 
 /**
  * @brief This function verifies an Ultra Honk proof for a given Flavor.
@@ -47,7 +66,7 @@ UltraVerifier_<Flavor>::UltraVerifierOutput UltraVerifier_<Flavor>::verify_proof
     inputs.reconstruct_from_public(public_inputs);
 
     // Aggregate new pairing points with those reconstructed from the public inputs
-    if constexpr (!std::is_same_v<IO, NoopIO>) {
+    if constexpr (HasPairingInputs<IO>) {
         decider_output.pairing_points.aggregate(inputs.pairing_inputs);
     }
 
@@ -122,9 +141,12 @@ template UltraVerifier_<UltraRollupFlavor>::UltraVerifierOutput UltraVerifier_<U
 template UltraVerifier_<MegaFlavor>::UltraVerifierOutput UltraVerifier_<MegaFlavor>::verify_proof<DefaultIO>(
     const Proof& proof, const Proof& ipa_proof);
 
-// Explicit instantiation for NoopIO to support merged proofs that expose no special public inputs
-template UltraVerifier_<MegaFlavor>::UltraVerifierOutput UltraVerifier_<MegaFlavor>::verify_proof<NoopIO>(
+template UltraVerifier_<MegaFlavor>::UltraVerifierOutput UltraVerifier_<MegaFlavor>::verify_proof<BindingBlockIO>(
     const Proof& proof, const Proof& ipa_proof);
+
+// Explicit instantiation for Mega verifier handling merged proofs that expose no special public inputs
+template UltraVerifier_<MegaFlavor>::UltraVerifierOutput
+UltraVerifier_<MegaFlavor>::verify_proof<MegaNativeNoopIO>(const Proof& proof, const Proof& ipa_proof);
 
 template UltraVerifier_<MegaZKFlavor>::UltraVerifierOutput UltraVerifier_<MegaZKFlavor>::verify_proof<DefaultIO>(
     const Proof& proof, const Proof& ipa_proof);

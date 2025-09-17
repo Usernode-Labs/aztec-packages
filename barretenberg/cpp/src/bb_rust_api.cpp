@@ -16,6 +16,7 @@
 #include "barretenberg/honk/proof_system/types/proof.hpp"
 #include "barretenberg/ultra_honk/ultra_prover.hpp"
 #include "barretenberg/stdlib/special_public_inputs/special_public_inputs.hpp"
+#include "barretenberg/special_public_inputs/special_public_inputs.hpp"
 #include "barretenberg/stdlib/honk_verifier/oink_recursive_verifier.hpp"
 #include "barretenberg/flavor/mega_recursive_flavor.hpp"
 #include "barretenberg/stdlib_circuit_builders/mega_circuit_builder.hpp"
@@ -187,10 +188,11 @@ int bb_mh_verify(const uint8_t* proof,
         bb::MegaVerifier verifier{ verification_key };
 
         // Decide IO strategy based on VK public inputs: if exactly 7, this is a merged
-        // proof exposing only the binding block, so use NoopIO to avoid reconstructing
-        // special public inputs. Otherwise, default to DefaultIO.
+        // proof exposing only the binding block, so use BindingBlockIO to avoid
+        // expecting DefaultIO pairing points. Otherwise, default to DefaultIO.
         using Builder = bb::MegaCircuitBuilder;
         using DefaultIO = bb::stdlib::recursion::honk::DefaultIO<Builder>;
+        using BindingIO = bb::BindingBlockIO;
         const size_t total_pub = static_cast<size_t>(vk_raw.num_public_inputs);
         const size_t default_pub = static_cast<size_t>(DefaultIO::PUBLIC_INPUTS_SIZE);
         size_t inner_pub = (total_pub > default_pub) ? (total_pub - default_pub) : 0;
@@ -199,25 +201,8 @@ int bb_mh_verify(const uint8_t* proof,
         }
 
         bool ok = false;
-        if (inner_pub == 7) {
-            // Manual verification path without reconstructing/publishing special public inputs.
-            // Mirrors UltraVerifier_<MegaFlavor>::verify_proof but skips DefaultIO aggregation.
-            auto transcript = std::make_shared<bb::MegaFlavor::Transcript>();
-            transcript->load_proof(proof_obj);
-            auto decider_vk = std::make_shared<bb::DeciderVerificationKey_<bb::MegaFlavor>>(verification_key);
-            bb::OinkVerifier<bb::MegaFlavor> oink_verifier{ decider_vk, transcript };
-            oink_verifier.verify();
-            // Gate challenges
-            using FF = bb::MegaFlavor::FF;
-            const uint64_t log_n = bb::MegaFlavor::USE_PADDING ? bb::MegaFlavor::VIRTUAL_LOG_N
-                                                               : decider_vk->vk->log_circuit_size;
-            for (size_t idx = 0; idx < log_n; idx++) {
-                decider_vk->gate_challenges.emplace_back(
-                    transcript->template get_challenge<FF>("Sumcheck:gate_challenge_" + std::to_string(idx)));
-            }
-            bb::DeciderVerifier_<bb::MegaFlavor> decider_verifier{ decider_vk, transcript };
-            auto decider_output = decider_verifier.verify();
-            ok = decider_output.check();
+        if (inner_pub == BindingIO::PUBLIC_INPUTS_SIZE) {
+            ok = verifier.template verify_proof<BindingIO>(proof_obj).result;
         } else {
             ok = verifier.template verify_proof<bb::DefaultIO>(proof_obj).result;
         }
@@ -249,7 +234,7 @@ int bb_mh_public_inputs(const uint8_t* proof,
         if (inner_pub == 0 && total_pub > 0) {
             inner_pub = total_pub; // No DefaultIO present; return all PIs as inner
         }
-        auto proof_fields = many_from_buffer<bb::fr>(proof_bytes);
+        auto proof_fields = from_buffer<std::vector<bb::fr>>(proof_bytes);
         
         std::vector<uint8_t> out;
         out.reserve(inner_pub * 32);
@@ -908,7 +893,7 @@ extern "C" int bb_mh_proof_fields_hash(const uint8_t* proof,
 {
     try {
         std::vector<uint8_t> proof_bytes(proof, proof + proof_len);
-        auto proof_fields = many_from_buffer<bb::fr>(proof_bytes);
+        auto proof_fields = from_buffer<std::vector<bb::fr>>(proof_bytes);
         using Params = bb::crypto::Poseidon2Bn254ScalarFieldParams;
         // Build state = Poseidon2 hash over [tag, fields...]
         // We reuse the stdlib hash layout: tag is the first element.
