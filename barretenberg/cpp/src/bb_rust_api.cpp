@@ -614,6 +614,41 @@ int bb_grumpkin_msm(
     }
 }
 
+// Hash-to-curve mapping for Grumpkin.
+// Map a sequence of 32‑byte big-endian base-field elements to a Grumpkin point
+// using a domain-separated Pedersen commit. When a native hash_to_curve is
+// available, this function can delegate to it.
+int bb_grumpkin_hash_to_curve(
+    const uint8_t* inputs_be,
+    size_t n_elems,
+    uint32_t domain,
+    uint8_t out_x_be[32],
+    uint8_t out_y_be[32])
+{
+    try {
+        // Domain-separated seed: BE(domain) || inputs_be (concatenated)
+        const size_t len = n_elems * 32;
+        std::vector<uint8_t> seed(4 + len);
+        seed[0] = static_cast<uint8_t>((domain >> 24) & 0xff);
+        seed[1] = static_cast<uint8_t>((domain >> 16) & 0xff);
+        seed[2] = static_cast<uint8_t>((domain >> 8) & 0xff);
+        seed[3] = static_cast<uint8_t>(domain & 0xff);
+        if (inputs_be && len > 0) {
+            std::memcpy(seed.data() + 4, inputs_be, len);
+        }
+
+        // Use native grumpkin hash_to_curve (blake3s-based, with retry via attempt counter)
+        auto P = bb::grumpkin::g1::affine_element::hash_to_curve(seed);
+        auto nx = P.x.from_montgomery_form();
+        auto ny = P.y.from_montgomery_form();
+        le_limbs_to_be32(nx.data, out_x_be);
+        le_limbs_to_be32(ny.data, out_y_be);
+        return 0;
+    } catch (...) {
+        return 1;
+    }
+}
+
 // BN254 Fr ops with 32-byte big-endian I/O
 static inline bb::fr fr_from_be32(const uint8_t be[32])
 {
@@ -696,6 +731,71 @@ int bb_fr_cmp(const uint8_t* a32, const uint8_t* b32)
 void bb_free(uint8_t* ptr) { std::free(ptr); }
 
 } // extern "C"
+// ----------------------------------------------------------------------------
+// Grumpkin scalar field (fr) arithmetic with 32-byte big-endian I/O
+// ----------------------------------------------------------------------------
+extern "C" {
+static inline bb::grumpkin::fr grumpkin_fr_from_be32(const uint8_t be[32])
+{
+    uint64_t limbs[4];
+    be32_to_le_limbs(be, limbs);
+    bb::grumpkin::fr v(limbs[0], limbs[1], limbs[2], limbs[3]);
+    return v.to_montgomery_form();
+}
+
+static inline std::vector<uint8_t> grumpkin_fr_to_be32(const bb::grumpkin::fr& a)
+{
+    auto norm = bb::grumpkin::fr(a).from_montgomery_form();
+    std::vector<uint8_t> out(32);
+    le_limbs_to_be32(norm.data, out.data());
+    return out;
+}
+
+int bb_grumpkin_fr_add(const uint8_t* a32, const uint8_t* b32, uint8_t** out_ptr, size_t* out_len)
+{
+    try {
+        auto a = grumpkin_fr_from_be32(a32);
+        auto b = grumpkin_fr_from_be32(b32);
+        bb::grumpkin::fr c = a + b;
+        auto out = grumpkin_fr_to_be32(c);
+        if (out_ptr) *out_ptr = bb_malloc_copy(out);
+        if (out_len) *out_len = out.size();
+        return 0;
+    } catch (...) {
+        return 1;
+    }
+}
+
+int bb_grumpkin_fr_sub(const uint8_t* a32, const uint8_t* b32, uint8_t** out_ptr, size_t* out_len)
+{
+    try {
+        auto a = grumpkin_fr_from_be32(a32);
+        auto b = grumpkin_fr_from_be32(b32);
+        bb::grumpkin::fr c = a - b;
+        auto out = grumpkin_fr_to_be32(c);
+        if (out_ptr) *out_ptr = bb_malloc_copy(out);
+        if (out_len) *out_len = out.size();
+        return 0;
+    } catch (...) {
+        return 1;
+    }
+}
+
+int bb_grumpkin_fr_mul(const uint8_t* a32, const uint8_t* b32, uint8_t** out_ptr, size_t* out_len)
+{
+    try {
+        auto a = grumpkin_fr_from_be32(a32);
+        auto b = grumpkin_fr_from_be32(b32);
+        bb::grumpkin::fr c = a * b;
+        auto out = grumpkin_fr_to_be32(c);
+        if (out_ptr) *out_ptr = bb_malloc_copy(out);
+        if (out_len) *out_len = out.size();
+        return 0;
+    } catch (...) {
+        return 1;
+    }
+}
+}
 // Simple Pedersen-bytes hasher: chunk bytes into 32-byte big-endian field elements over grumpkin::fq,
 // then hash with crypto::pedersen_hash::hash(inputs, domain=0). Returns 32-byte big-endian digest.
 struct PedersenBytesHasher {

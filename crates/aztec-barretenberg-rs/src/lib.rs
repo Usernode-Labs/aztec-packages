@@ -532,3 +532,221 @@ pub fn schnorr_blake2s_verify_xy(
         Ok(ok)
     }
 }
+
+/// Add two Grumpkin points (projective affine), returning (x,y) in 32‑byte BE.
+pub fn grumpkin_ec_add(p1x: [u8; 32], p1y: [u8; 32], p2x: [u8; 32], p2y: [u8; 32]) -> Result<([u8; 32], [u8; 32])> {
+    unsafe {
+        let mut x = [0u8; 32];
+        let mut y = [0u8; 32];
+        let rc = aztec_barretenberg_sys_rs::bb_grumpkin_ec_add(
+            p1x.as_ptr(), p1y.as_ptr(), p2x.as_ptr(), p2y.as_ptr(), x.as_mut_ptr(), y.as_mut_ptr(),
+        );
+        if rc != 0 {
+            return Err(BbError::Failure("grumpkin_ec_add"));
+        }
+        Ok((x, y))
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Grumpkin helpers: Pedersen commit (hash-to-curve surrogate) and scalar mul
+// -----------------------------------------------------------------------------
+/// Compute a Pedersen commitment on the Grumpkin curve over a list of 32-byte
+/// big-endian field elements, under a domain separator. Returns (x,y) in 32‑byte BE.
+pub fn grumpkin_pedersen_commit(inputs_be: &[[u8; 32]], domain: u32) -> Result<([u8; 32], [u8; 32])> {
+    unsafe {
+        let mut flat: Vec<u8> = Vec::with_capacity(inputs_be.len() * 32);
+        for be in inputs_be.iter() {
+            flat.extend_from_slice(be);
+        }
+        let mut x = [0u8; 32];
+        let mut y = [0u8; 32];
+        let rc = aztec_barretenberg_sys_rs::bb_pedersen_commit_grumpkin(
+            flat.as_ptr(),
+            inputs_be.len() as _,
+            domain as u32,
+            x.as_mut_ptr(),
+            y.as_mut_ptr(),
+        );
+        if rc != 0 {
+            return Err(BbError::Failure("grumpkin_pedersen_commit"));
+        }
+        Ok((x, y))
+    }
+}
+
+/// Dedicated hash-to-curve style API (placeholder): map a single 32‑byte
+/// big‑endian field element into a Grumpkin curve point using a domain-separated
+/// Pedersen commit under the hood. When a native bb_grumpkin_hash_to_curve
+/// becomes available, this function can delegate to it.
+pub fn grumpkin_hash_to_curve(field_be: [u8; 32], domain: u32) -> Result<([u8; 32], [u8; 32])> {
+    unsafe {
+        let mut x = [0u8; 32];
+        let mut y = [0u8; 32];
+        let rc = aztec_barretenberg_sys_rs::bb_grumpkin_hash_to_curve(
+            field_be.as_ptr(), 1, domain as u32, x.as_mut_ptr(), y.as_mut_ptr(),
+        );
+        if rc != 0 {
+            return Err(BbError::Failure("grumpkin_hash_to_curve"));
+        }
+        Ok((x, y))
+    }
+}
+
+/// Multiply a Grumpkin point by a scalar, using the MSM backend for a single point.
+/// Inputs and outputs are 32‑byte BE; `inf` is treated as 0 for non‑infinite, 1 for infinite.
+pub fn grumpkin_scalar_mul(point_x: [u8; 32], point_y: [u8; 32], scalar32: [u8; 32]) -> Result<([u8; 32], [u8; 32], u8)> {
+    unsafe {
+        // Split scalar into two 128‑bit limbs (big‑endian), high then low.
+        let hi = &scalar32[..16];
+        let lo = &scalar32[16..];
+        // Prepare single-point MSM inputs
+        let xs = point_x;
+        let ys = point_y;
+        let inf = [0u8; 1];
+        let mut out_x = [0u8; 32];
+        let mut out_y = [0u8; 32];
+        let mut out_inf: u8 = 0;
+        let rc = aztec_barretenberg_sys_rs::bb_grumpkin_msm(
+            xs.as_ptr(),
+            ys.as_ptr(),
+            inf.as_ptr(),
+            1,
+            lo.as_ptr(),
+            hi.as_ptr(),
+            out_x.as_mut_ptr(),
+            out_y.as_mut_ptr(),
+            &mut out_inf as *mut u8,
+        );
+        if rc != 0 {
+            return Err(BbError::Failure("grumpkin_scalar_mul"));
+        }
+        Ok((out_x, out_y, out_inf))
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Grumpkin Fr helpers (scalar field for grumpkin ops)
+// -----------------------------------------------------------------------------
+/// Add two 32‑byte big‑endian scalars modulo grumpkin::fr.
+pub fn grumpkin_fr_add_mod(a_be: [u8; 32], b_be: [u8; 32]) -> Result<[u8; 32]> {
+    unsafe {
+        let mut out_ptr: *mut u8 = core::ptr::null_mut();
+        let mut out_len: usize = 0;
+        let rc = aztec_barretenberg_sys_rs::bb_grumpkin_fr_add(
+            a_be.as_ptr(), b_be.as_ptr(), &mut out_ptr, &mut out_len,
+        );
+        if rc != 0 || out_len != 32 {
+            return Err(BbError::Failure("grumpkin_fr_add_mod"));
+        }
+        let slice = core::slice::from_raw_parts(out_ptr, out_len);
+        let mut out = [0u8; 32];
+        out.copy_from_slice(slice);
+        aztec_barretenberg_sys_rs::bb_free(out_ptr);
+        Ok(out)
+    }
+}
+
+/// Subtract two 32‑byte big‑endian scalars modulo grumpkin::fr.
+pub fn grumpkin_fr_sub_mod(a_be: [u8; 32], b_be: [u8; 32]) -> Result<[u8; 32]> {
+    unsafe {
+        let mut out_ptr: *mut u8 = core::ptr::null_mut();
+        let mut out_len: usize = 0;
+        let rc = aztec_barretenberg_sys_rs::bb_grumpkin_fr_sub(
+            a_be.as_ptr(), b_be.as_ptr(), &mut out_ptr, &mut out_len,
+        );
+        if rc != 0 || out_len != 32 {
+            return Err(BbError::Failure("grumpkin_fr_sub_mod"));
+        }
+        let slice = core::slice::from_raw_parts(out_ptr, out_len);
+        let mut out = [0u8; 32];
+        out.copy_from_slice(slice);
+        aztec_barretenberg_sys_rs::bb_free(out_ptr);
+        Ok(out)
+    }
+}
+
+/// Multiply two 32‑byte big‑endian scalars modulo grumpkin::fr.
+pub fn grumpkin_fr_mul_mod(a_be: [u8; 32], b_be: [u8; 32]) -> Result<[u8; 32]> {
+    unsafe {
+        let mut out_ptr: *mut u8 = core::ptr::null_mut();
+        let mut out_len: usize = 0;
+        let rc = aztec_barretenberg_sys_rs::bb_grumpkin_fr_mul(
+            a_be.as_ptr(), b_be.as_ptr(), &mut out_ptr, &mut out_len,
+        );
+        if rc != 0 || out_len != 32 {
+            return Err(BbError::Failure("grumpkin_fr_mul_mod"));
+        }
+        let slice = core::slice::from_raw_parts(out_ptr, out_len);
+        let mut out = [0u8; 32];
+        out.copy_from_slice(slice);
+        aztec_barretenberg_sys_rs::bb_free(out_ptr);
+        Ok(out)
+    }
+}
+
+/// Negate a 32‑byte big‑endian scalar modulo grumpkin::fr.
+pub fn grumpkin_fr_neg_mod(a_be: [u8; 32]) -> Result<[u8; 32]> {
+    // Compute 0 - a mod r.
+    grumpkin_fr_sub_mod([0u8; 32], a_be)
+}
+
+// -----------------------------------------------------------------------------
+// BN254 Fr helpers (kept for BN254 ops; not used for grumpkin scalars)
+// -----------------------------------------------------------------------------
+/// Add two 32‑byte big‑endian field elements modulo the BN254 Fr modulus.
+pub fn fr_add_mod(a_be: [u8; 32], b_be: [u8; 32]) -> Result<[u8; 32]> {
+    unsafe {
+        let mut out_ptr: *mut u8 = core::ptr::null_mut();
+        let mut out_len: usize = 0;
+        let rc = aztec_barretenberg_sys_rs::bb_fr_add(
+            a_be.as_ptr(), b_be.as_ptr(), &mut out_ptr, &mut out_len,
+        );
+        if rc != 0 || out_len != 32 {
+            return Err(BbError::Failure("fr_add_mod"));
+        }
+        let slice = core::slice::from_raw_parts(out_ptr, out_len);
+        let mut out = [0u8; 32];
+        out.copy_from_slice(slice);
+        aztec_barretenberg_sys_rs::bb_free(out_ptr);
+        Ok(out)
+    }
+}
+
+/// Subtract two 32‑byte big‑endian field elements modulo the BN254 Fr modulus.
+pub fn fr_sub_mod(a_be: [u8; 32], b_be: [u8; 32]) -> Result<[u8; 32]> {
+    unsafe {
+        let mut out_ptr: *mut u8 = core::ptr::null_mut();
+        let mut out_len: usize = 0;
+        let rc = aztec_barretenberg_sys_rs::bb_fr_sub(
+            a_be.as_ptr(), b_be.as_ptr(), &mut out_ptr, &mut out_len,
+        );
+        if rc != 0 || out_len != 32 {
+            return Err(BbError::Failure("fr_sub_mod"));
+        }
+        let slice = core::slice::from_raw_parts(out_ptr, out_len);
+        let mut out = [0u8; 32];
+        out.copy_from_slice(slice);
+        aztec_barretenberg_sys_rs::bb_free(out_ptr);
+        Ok(out)
+    }
+}
+
+/// Multiply two 32‑byte big‑endian field elements modulo the BN254 Fr modulus.
+pub fn fr_mul_mod(a_be: [u8; 32], b_be: [u8; 32]) -> Result<[u8; 32]> {
+    unsafe {
+        let mut out_ptr: *mut u8 = core::ptr::null_mut();
+        let mut out_len: usize = 0;
+        let rc = aztec_barretenberg_sys_rs::bb_fr_mul(
+            a_be.as_ptr(), b_be.as_ptr(), &mut out_ptr, &mut out_len,
+        );
+        if rc != 0 || out_len != 32 {
+            return Err(BbError::Failure("fr_mul_mod"));
+        }
+        let slice = core::slice::from_raw_parts(out_ptr, out_len);
+        let mut out = [0u8; 32];
+        out.copy_from_slice(slice);
+        aztec_barretenberg_sys_rs::bb_free(out_ptr);
+        Ok(out)
+    }
+}

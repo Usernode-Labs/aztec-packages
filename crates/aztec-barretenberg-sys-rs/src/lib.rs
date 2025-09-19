@@ -194,6 +194,34 @@ extern "C" {
         out_infinite: *mut u8,
     ) -> c_int;
 
+    pub fn bb_grumpkin_hash_to_curve(
+        inputs_be: *const u8,
+        n_elems: size_t,
+        domain: u32,
+        out_x_be: *mut u8,
+        out_y_be: *mut u8,
+    ) -> c_int;
+
+    // Grumpkin scalar field arithmetic (32-byte big-endian inputs/outputs)
+    pub fn bb_grumpkin_fr_add(
+        a32: *const u8,
+        b32: *const u8,
+        out_ptr: *mut *mut u8,
+        out_len: *mut size_t,
+    ) -> c_int;
+    pub fn bb_grumpkin_fr_sub(
+        a32: *const u8,
+        b32: *const u8,
+        out_ptr: *mut *mut u8,
+        out_len: *mut size_t,
+    ) -> c_int;
+    pub fn bb_grumpkin_fr_mul(
+        a32: *const u8,
+        b32: *const u8,
+        out_ptr: *mut *mut u8,
+        out_len: *mut size_t,
+    ) -> c_int;
+
     // BN254 Fr arithmetic helpers (32-byte big-endian inputs/outputs)
     pub fn bb_fr_add(
         a32: *const u8,
