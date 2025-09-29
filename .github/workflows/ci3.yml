@@ -76,6 +76,11 @@ jobs:
         if: contains(github.event.pull_request.labels.*.name, 'barretenberg-ci') || (github.event.pull_request.base.ref == 'merge-train/barretenberg')
         run: echo "CI_BARRETENBERG=1" >> $GITHUB_ENV
 
+      - name: BB prebuilts (Rust) env
+        run: |
+          echo "BB_USE_PREBUILT=1" >> $GITHUB_ENV
+          echo "BB_PREBUILT_VERSION=$(cat barretenberg/VERSION)" >> $GITHUB_ENV
+
       # Allow full concurrency for merge-train PRs, one-run-per-branch for everything else.
       - name: Set Instance Postfix for merge-train
         if: startsWith(github.event.pull_request.head.ref, 'merge-train/')
@@ -128,6 +133,8 @@ jobs:
           EXTERNAL_ETHEREUM_CONSENSUS_HOST_API_KEY: ${{ secrets.GCP_SEPOLIA_API_KEY }}
           EXTERNAL_ETHEREUM_CONSENSUS_HOST_API_KEY_HEADER: "X-goog-api-key"
           GCP_PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
+          BB_USE_PREBUILT: ${{ env.BB_USE_PREBUILT }}
+          BB_PREBUILT_VERSION: ${{ env.BB_PREBUILT_VERSION }}
         run: |
           if [ "${{ github.event_name }}" == "merge_group" ] || [ "${CI_MERGE_QUEUE:-0}" -eq 1 ]; then
             exec ./ci.sh merge-queue
