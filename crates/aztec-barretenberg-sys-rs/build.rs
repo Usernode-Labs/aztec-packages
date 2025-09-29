@@ -383,6 +383,7 @@ fn main() {
         println!("cargo:rustc-link-lib=dylib=c++"); // libc++ on macOS
     } else {
         // Statically link libstdc++/libgcc on Linux to avoid runtime deps
+        println!("cargo:rustc-link-lib=static=stdc++");
         println!("cargo:rustc-link-arg=-static-libstdc++");
         println!("cargo:rustc-link-arg=-static-libgcc");
         println!("cargo:rustc-link-lib=dylib=dl");
