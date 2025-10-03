@@ -330,12 +330,27 @@ fn main() {
     println!("cargo:rerun-if-changed={}", bb_lib_dir.join("libbarretenberg.a").display());
     println!("cargo:rerun-if-changed={}", bb_lib_dir.join("libbb_rust_api.a").display());
 
-    // Use prebuilt shim if available to avoid requiring a C++ toolchain.
+    // Decide whether to use a prebuilt shim or compile the local shim. If the environment
+    // variable BB_FORCE_LOCAL_SHIM=1 is set, always compile the local shim to ensure the
+    // latest symbols are available even when a prebuilt shim is present.
     let prebuilt_shim = bb_lib_dir.join("libbb_rust_api.a");
-    if prebuilt_shim.exists() {
+    let force_local_shim = env::var("BB_FORCE_LOCAL_SHIM")
+        .ok()
+        .map(|s| s == "1" || s.eq_ignore_ascii_case("true"))
+        .unwrap_or(false);
+
+    if prebuilt_shim.exists() && !force_local_shim {
+        println!("cargo:warning=Using prebuilt bb_rust_api from {}", prebuilt_shim.display());
         println!("cargo:rustc-link-lib=static=bb_rust_api");
     } else {
-        if allow_fallback {
+        if allow_fallback || force_local_shim {
+            println!("cargo:warning=Compiling local C++ shim (force_local_shim={})", force_local_shim);
+            // Compile shim from a temporary copy to avoid local source-tree header collisions when linking against prebuilt.
+            let out_dir = PathBuf::from(env::var("OUT_DIR").unwrap());
+            let shim_src = out_dir.join("bb_rust_api.cpp");
+            let shim_in = bb_cpp_src.join("bb_rust_api.cpp");
+            std::fs::copy(&shim_in, &shim_src).expect("copy bb_rust_api.cpp");
+
             let mut cc_build = cc::Build::new();
             cc_build
                 .cpp(true)
@@ -343,17 +358,27 @@ fn main() {
                 .flag("-fPIC")
                 .flag("-Wno-error")
                 .flag_if_supported("-Wno-unused-parameter")
-                .flag_if_supported(if env::var("SANITIZE").ok().as_deref() ==
-                    Some("address") { "-fsanitize=address" } else { "" })
-                .flag_if_supported(if env::var("SANITIZE").ok().as_deref() ==
-                    Some("address") { "-fno-omit-frame-pointer" } else { "" })
+                .flag_if_supported(if env::var("SANITIZE").ok().as_deref() == Some("address") {
+                    "-fsanitize=address"
+                } else {
+                    ""
+                })
+                .flag_if_supported(if env::var("SANITIZE").ok().as_deref() == Some("address") {
+                    "-fno-omit-frame-pointer"
+                } else {
+                    ""
+                })
+                // Only include prebuilt (or built) headers, not local source tree headers
                 .include(&inc_primary)
                 .include(&inc_msgpack)
                 .include(&inc_tracy)
-                .file(bb_cpp_src.join("bb_rust_api.cpp"));
+                .file(&shim_src);
             cc_build.compile("bb_rust_api");
         } else {
-            panic!("libbb_rust_api.a not found in {} and fallback compilation disabled.", bb_lib_dir.display());
+            panic!(
+                "libbb_rust_api.a not found in {} and fallback compilation disabled.",
+                bb_lib_dir.display()
+            );
         }
     }
 

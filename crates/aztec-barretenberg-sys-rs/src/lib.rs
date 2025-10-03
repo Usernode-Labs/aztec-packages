@@ -11,6 +11,8 @@ extern "C" {
 
     pub fn bb_acir_sizes(acir: *const u8, acir_len: size_t, out_total: *mut u32, out_subgroup: *mut u32) -> c_int;
 
+    pub fn bb_acir_compile_mega_honk(acir: *const u8, acir_len: size_t, out_key_id32: *mut u8) -> c_int;
+
     pub fn bb_mh_write_vk(acir: *const u8, acir_len: size_t, out_vk: *mut *mut u8, out_vk_len: *mut size_t)
         -> c_int;
 
@@ -25,11 +27,26 @@ extern "C" {
         out_vk_len: *mut size_t,
     ) -> c_int;
 
+    pub fn bb_mh_prove_with_id(
+        key_id32: *const u8,
+        witness: *const u8,
+        witness_len: size_t,
+        out_proof: *mut *mut u8,
+        out_proof_len: *mut size_t,
+    ) -> c_int;
+
     pub fn bb_mh_verify(
         proof: *const u8,
         proof_len: size_t,
         vk: *const u8,
         vk_len: size_t,
+        out_ok: *mut bool,
+    ) -> c_int;
+
+    pub fn bb_mh_verify_with_id(
+        key_id32: *const u8,
+        proof: *const u8,
+        proof_len: size_t,
         out_ok: *mut bool,
     ) -> c_int;
 

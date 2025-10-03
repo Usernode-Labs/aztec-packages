@@ -3,6 +3,17 @@
 #include <memory>
 #include <vector>
 #include <filesystem>
+#include <array>
+#include <unordered_map>
+#include <mutex>
+#include <algorithm>
+#include <type_traits>
+
+#ifndef BB_ENABLE_INPLACE_REFRESH
+#define BB_ENABLE_INPLACE_REFRESH 0
+#endif
+#include <optional>
+#include <stdexcept>
 
 #include "barretenberg/common/serialize.hpp"
 #include "barretenberg/common/throw_or_abort.hpp"
@@ -35,10 +46,119 @@
 using ::to_buffer;
 using ::from_buffer;
 
+// Local helper for BN254 fr -> 32-byte big-endian without depending on C-linkage symbols
+static inline void le_limbs_to_be32_local(const uint64_t in_le[4], uint8_t* out_be)
+{
+    for (size_t i = 0; i < 4; ++i) {
+        uint64_t limb = in_le[3 - i];
+        for (size_t j = 0; j < 8; ++j) {
+            out_be[i * 8 + (7 - j)] = static_cast<uint8_t>(limb & 0xff);
+            limb >>= 8;
+        }
+    }
+}
+
+static inline std::array<uint8_t, 32> fr_to_be32_local(const bb::fr& a)
+{
+    auto norm = bb::fr(a).from_montgomery_form();
+    std::array<uint8_t, 32> out{};
+    le_limbs_to_be32_local(norm.data, out.data());
+    return out;
+}
+
+namespace {
+
+struct KeyId {
+    std::array<uint8_t, 32> bytes{};
+    bool operator==(const KeyId&) const = default;
+};
+
+struct KeyIdHash {
+    size_t operator()(const KeyId& key) const noexcept
+    {
+        size_t acc = 0;
+        for (auto byte : key.bytes) {
+            acc = (acc * 131) ^ static_cast<size_t>(byte);
+        }
+        return acc;
+    }
+};
+
+struct MegaKeyEntry {
+    std::shared_ptr<bb::DeciderProvingKey_<bb::MegaFlavor>> proving_key;
+    std::shared_ptr<bb::MegaFlavor::VerificationKey> verification_key;
+    std::vector<uint8_t> acir_bytes; // to recreate builders for witness refresh
+};
+
+struct MegaKeyCache {
+    std::unordered_map<KeyId, MegaKeyEntry, KeyIdHash> map;
+    std::mutex mutex;
+};
+
+MegaKeyCache& mega_cache()
+{
+    static MegaKeyCache cache;
+    return cache;
+}
+
+KeyId key_id_from_field(const bb::fr& h)
+{
+    KeyId id;
+    auto be = fr_to_be32_local(h);
+    std::copy(be.begin(), be.end(), id.bytes.begin());
+    return id;
+}
+
+KeyId cache_mega_keys(const std::shared_ptr<bb::DeciderProvingKey_<bb::MegaFlavor>>& proving_key,
+                      const std::shared_ptr<bb::MegaFlavor::VerificationKey>& verification_key,
+                      std::vector<uint8_t> acir_bytes)
+{
+    auto id = key_id_from_field(verification_key->hash());
+    auto& cache = mega_cache();
+    {
+        std::lock_guard<std::mutex> lock(cache.mutex);
+        cache.map[id] = MegaKeyEntry{ proving_key, verification_key, std::move(acir_bytes) };
+    }
+    return id;
+}
+
+std::optional<MegaKeyEntry> get_cached_mega_keys(const KeyId& id)
+{
+    auto& cache = mega_cache();
+    std::lock_guard<std::mutex> lock(cache.mutex);
+    auto it = cache.map.find(id);
+    if (it == cache.map.end()) {
+        return std::nullopt;
+    }
+    return it->second;
+}
+
+MegaKeyEntry require_cached_mega_keys(const KeyId& id)
+{
+    auto maybe_entry = get_cached_mega_keys(id);
+    if (!maybe_entry.has_value()) {
+        throw std::runtime_error("mega key id not found");
+    }
+    return *maybe_entry;
+}
+
+} // namespace
+
 extern "C" {
 
-// Forward declare helper for BN254 fr -> 32-byte big-endian
+static constexpr size_t MEGA_KEY_ID_SIZE = 32;
+// Forward declare helper for BN254 fr -> 32-byte big-endian used by multiple shims below
 static inline std::vector<uint8_t> fr_to_be32(const bb::fr& a);
+
+static inline KeyId key_id_from_bytes(const uint8_t* data, size_t len)
+{
+    if (len != MEGA_KEY_ID_SIZE) {
+        throw std::invalid_argument("key id must be 32 bytes");
+    }
+    KeyId id;
+    std::copy(data, data + MEGA_KEY_ID_SIZE, id.bytes.begin());
+    return id;
+}
 
 // Provide malloc-backed buffer for FFI returns.
 static uint8_t* bb_malloc_copy(const std::vector<uint8_t>& src)
@@ -63,24 +183,16 @@ void bb_set_crs_path(const char* path_cstr)
 int bb_acir_sizes(const uint8_t* acir, size_t acir_len, uint32_t* out_total, uint32_t* out_subgroup)
 {
     try {
-        fprintf(stderr, "[bb] acir_sizes: enter (acir_len=%zu)\n", acir_len);
         std::vector<uint8_t> acir_vec(acir, acir + acir_len);
         const acir_format::ProgramMetadata metadata{ .honk_recursion = 1 };
         acir_format::AcirProgram program{ acir_format::circuit_buf_to_acir_format(std::move(acir_vec)) };
-        fprintf(stderr, "[bb] acir_sizes: constraints: poseidon2=%zu, msm=%zu, ec_add=%zu\n",
-                program.constraints.poseidon2_constraints.size(),
-                program.constraints.multi_scalar_mul_constraints.size(),
-                program.constraints.ec_add_constraints.size());
         auto builder = acir_format::create_circuit<bb::MegaCircuitBuilder>(program, metadata);
-        fprintf(stderr, "[bb] acir_sizes: builder created\n");
         builder.finalize_circuit(true);
-        fprintf(stderr, "[bb] acir_sizes: builder finalized\n");
         const uint32_t total = static_cast<uint32_t>(builder.get_finalized_total_circuit_size());
         const uint32_t subgroup = static_cast<uint32_t>(
             builder.get_circuit_subgroup_size(builder.get_finalized_total_circuit_size()));
         if (out_total) *out_total = total;
         if (out_subgroup) *out_subgroup = subgroup;
-        fprintf(stderr, "[bb] acir_sizes: exit (total=%u subgroup=%u)\n", total, subgroup);
         return 0;
     } catch (const std::exception& e) {
         fprintf(stderr, "[bb][ERR] acir_sizes exception: %s\n", e.what());
@@ -91,29 +203,174 @@ int bb_acir_sizes(const uint8_t* acir, size_t acir_len, uint32_t* out_total, uin
     }
 }
 
-int bb_mh_write_vk(const uint8_t* acir, size_t acir_len, uint8_t** out_vk, size_t* out_vk_len)
+// Internal helper: refresh witness-dependent polynomials in a cached proving key from a fresh builder
+#if BB_ENABLE_INPLACE_REFRESH
+static void mh_refresh_witness_polynomials(bb::MegaCircuitBuilder& builder,
+                                           bb::DeciderProvingKey_<bb::MegaFlavor>& pk)
+{
+    builder.blocks.compute_offsets(pk.get_is_structured());
+
+    auto wires = pk.polynomials.get_wires();
+    using WireField = typename std::remove_reference_t<decltype(wires[0])>::FF;
+    std::array<WireField*, bb::MegaCircuitBuilder::NUM_WIRES> wire_ptrs{};
+    std::array<size_t, bb::MegaCircuitBuilder::NUM_WIRES> wire_start{};
+    for (size_t w = 0; w < bb::MegaCircuitBuilder::NUM_WIRES; ++w) {
+        wire_ptrs[w] = wires[w].data();
+        wire_start[w] = wires[w].start_index();
+    }
+
+    const auto& variables = builder.get_variables();
+    const auto& real_var_index = builder.real_variable_index;
+
+    size_t final_active_wire_idx = 0;
+    for (auto& block : builder.blocks.get()) {
+        const uint32_t offset = block.trace_offset();
+        const uint32_t block_size = static_cast<uint32_t>(block.size());
+        if (block_size == 0) {
+            continue;
+        }
+        final_active_wire_idx = offset + block_size - 1;
+        for (size_t w = 0; w < bb::MegaCircuitBuilder::NUM_WIRES; ++w) {
+            auto* dest = wire_ptrs[w];
+            if (!dest) {
+                continue;
+            }
+            const size_t start = wire_start[w];
+            for (uint32_t row = 0; row < block_size; ++row) {
+                const uint32_t var_idx = block.wires[w][row];
+                const ptrdiff_t dst_index = static_cast<ptrdiff_t>(offset + row) - static_cast<ptrdiff_t>(start);
+                BB_ASSERT_GTE(dst_index, 0);
+                dest[dst_index] = variables[real_var_index[var_idx]];
+            }
+        }
+    }
+    pk.set_final_active_wire_idx(final_active_wire_idx);
+
+    const size_t wire_idx_offset = bb::MegaFlavor::has_zero_row ? 1 : 0;
+    const size_t num_ecc_ops = builder.blocks.ecc_op.size();
+    auto ecc_wires = pk.polynomials.get_ecc_op_wires();
+    for (size_t wire_i = 0; wire_i < ecc_wires.size(); ++wire_i) {
+        for (size_t i = 0; i < num_ecc_ops; ++i) {
+            ecc_wires[wire_i].at(i) = wires[wire_i][i + wire_idx_offset];
+        }
+    }
+    for (size_t i = 0; i < num_ecc_ops; ++i) {
+        pk.polynomials.lagrange_ecc_op.at(i) = 1;
+    }
+
+    if constexpr (bb::HasDataBus<bb::MegaFlavor>) {
+        const auto& calldata = builder.get_calldata();
+        const auto& secondary_calldata = builder.get_secondary_calldata();
+        const auto& return_data = builder.get_return_data();
+
+        for (size_t idx = 0; idx < calldata.size(); ++idx) {
+            pk.polynomials.calldata.at(idx) = builder.get_variable(calldata[idx]);
+            pk.polynomials.calldata_read_counts.at(idx) = calldata.get_read_count(idx);
+            pk.polynomials.calldata_read_tags.at(idx) = pk.polynomials.calldata_read_counts[idx] > 0 ? 1 : 0;
+        }
+        for (size_t idx = 0; idx < secondary_calldata.size(); ++idx) {
+            pk.polynomials.secondary_calldata.at(idx) = builder.get_variable(secondary_calldata[idx]);
+            pk.polynomials.secondary_calldata_read_counts.at(idx) = secondary_calldata.get_read_count(idx);
+            pk.polynomials.secondary_calldata_read_tags.at(idx) =
+                pk.polynomials.secondary_calldata_read_counts[idx] > 0 ? 1 : 0;
+        }
+        for (size_t idx = 0; idx < return_data.size(); ++idx) {
+            pk.polynomials.return_data.at(idx) = builder.get_variable(return_data[idx]);
+            pk.polynomials.return_data_read_counts.at(idx) = return_data.get_read_count(idx);
+            pk.polynomials.return_data_read_tags.at(idx) = pk.polynomials.return_data_read_counts[idx] > 0 ? 1 : 0;
+        }
+    }
+
+    const uint32_t ram_rom_offset = builder.blocks.memory.trace_offset();
+    pk.memory_read_records.clear();
+    pk.memory_read_records.reserve(builder.memory_read_records.size());
+    for (auto idx : builder.memory_read_records) {
+        pk.memory_read_records.emplace_back(idx + ram_rom_offset);
+    }
+    pk.memory_write_records.clear();
+    pk.memory_write_records.reserve(builder.memory_write_records.size());
+    for (auto idx : builder.memory_write_records) {
+        pk.memory_write_records.emplace_back(idx + ram_rom_offset);
+    }
+
+    pk.public_inputs.clear();
+    size_t npi = pk.get_metadata().num_public_inputs;
+    for (size_t i = 0; i < npi; ++i) {
+        size_t idx = i + pk.pub_inputs_offset();
+        pk.public_inputs.emplace_back(pk.polynomials.w_r[idx]);
+    }
+
+    pk.polynomials.set_shifted();
+    pk.polynomials.lagrange_first.at(0) = 1;
+    pk.polynomials.lagrange_last.at(pk.get_final_active_wire_idx()) = 1;
+
+    auto zero_poly = [](auto& poly) {
+        using Poly = std::remove_reference_t<decltype(poly)>;
+        using Field = typename Poly::FF;
+        Field* begin = poly.data();
+        if (!begin) {
+            return;
+        }
+        Field* end = begin + (poly.end_index() - poly.start_index());
+        std::fill(begin, end, Field());
+    };
+
+    zero_poly(pk.polynomials.lookup_inverses);
+    zero_poly(pk.polynomials.lookup_read_counts);
+    zero_poly(pk.polynomials.lookup_read_tags);
+    if constexpr (bb::HasDataBus<bb::MegaFlavor>) {
+        zero_poly(pk.polynomials.calldata_inverses);
+        zero_poly(pk.polynomials.secondary_calldata_inverses);
+        zero_poly(pk.polynomials.return_data_inverses);
+    }
+    zero_poly(pk.polynomials.z_perm);
+
+    auto& rc = pk.polynomials.lookup_read_counts;
+    auto& rt = pk.polynomials.lookup_read_tags;
+    construct_lookup_read_counts<bb::MegaFlavor>(rc, rt, builder, pk.dyadic_size());
+}
+#endif
+
+int bb_acir_compile_mega_honk(const uint8_t* acir, size_t acir_len, uint8_t out_key_id[MEGA_KEY_ID_SIZE])
 {
     try {
-        fprintf(stderr, "[bb] write_vk: enter (acir_len=%zu)\n", acir_len);
         std::vector<uint8_t> acir_vec(acir, acir + acir_len);
         const acir_format::ProgramMetadata metadata{ .honk_recursion = 1 };
         acir_format::AcirProgram program{ acir_format::circuit_buf_to_acir_format(std::move(acir_vec)) };
-        fprintf(stderr, "[bb] write_vk: constraints: poseidon2=%zu, msm=%zu, ec_add=%zu\n",
-                program.constraints.poseidon2_constraints.size(),
-                program.constraints.multi_scalar_mul_constraints.size(),
-                program.constraints.ec_add_constraints.size());
         auto builder = acir_format::create_circuit<bb::MegaCircuitBuilder>(program, metadata);
-        fprintf(stderr, "[bb] write_vk: builder created\n");
+        using DeciderProvingKey = bb::DeciderProvingKey_<bb::MegaFlavor>;
+        auto proving_key = std::make_shared<DeciderProvingKey>(builder);
+        auto verification_key = std::make_shared<bb::MegaFlavor::VerificationKey>(proving_key->get_precomputed());
+        // Recreate acir bytes from program (we no longer have the original vector after move)
+        // Instead, use the input buffer directly
+        std::vector<uint8_t> acir_copy(acir, acir + acir_len);
+        auto id = cache_mega_keys(proving_key, verification_key, std::move(acir_copy));
+        std::copy(id.bytes.begin(), id.bytes.end(), out_key_id);
+        return 0;
+    } catch (const std::exception& e) {
+        fprintf(stderr, "[bb][ERR] compile_mega exception: %s\n", e.what());
+        return 1;
+    } catch (...) {
+        fprintf(stderr, "[bb][ERR] compile_mega unknown exception\n");
+        return 1;
+    }
+}
+
+int bb_mh_write_vk(const uint8_t* acir, size_t acir_len, uint8_t** out_vk, size_t* out_vk_len)
+{
+    try {
+        std::vector<uint8_t> acir_vec(acir, acir + acir_len);
+        const acir_format::ProgramMetadata metadata{ .honk_recursion = 1 };
+        acir_format::AcirProgram program{ acir_format::circuit_buf_to_acir_format(std::move(acir_vec)) };
+        auto builder = acir_format::create_circuit<bb::MegaCircuitBuilder>(program, metadata);
 
         using DeciderProvingKey = bb::DeciderProvingKey_<bb::MegaFlavor>;
         using VerificationKey = bb::MegaFlavor::VerificationKey;
         DeciderProvingKey proving_key(builder);
-        fprintf(stderr, "[bb] write_vk: proving_key built\n");
         VerificationKey vk(proving_key.get_precomputed());
         auto buf = to_buffer(vk);
         if (out_vk) *out_vk = bb_malloc_copy(buf);
         if (out_vk_len) *out_vk_len = buf.size();
-        fprintf(stderr, "[bb] write_vk: exit (vk_len=%zu)\n", buf.size());
         return 0;
     } catch (const std::exception& e) {
         fprintf(stderr, "[bb][ERR] write_vk exception: %s\n", e.what());
@@ -134,41 +391,198 @@ int bb_mh_prove(const uint8_t* acir,
                 size_t* out_vk_len)
 {
     try {
-        fprintf(stderr, "[bb] prove: enter (acir_len=%zu witness_len=%zu)\n", acir_len, witness_len);
         std::vector<uint8_t> acir_vec(acir, acir + acir_len);
         std::vector<uint8_t> wit_vec(witness, witness + witness_len);
         const acir_format::ProgramMetadata metadata{ .honk_recursion = 1 };
         acir_format::AcirProgram program{ acir_format::circuit_buf_to_acir_format(std::move(acir_vec)),
                                           acir_format::witness_buf_to_witness_data(std::move(wit_vec)) };
-        fprintf(stderr, "[bb] prove: constraints: poseidon2=%zu, msm=%zu, ec_add=%zu\n",
-                program.constraints.poseidon2_constraints.size(),
-                program.constraints.multi_scalar_mul_constraints.size(),
-                program.constraints.ec_add_constraints.size());
         auto builder = acir_format::create_circuit<bb::MegaCircuitBuilder>(program, metadata);
-        fprintf(stderr, "[bb] prove: builder created\n");
         using DeciderProvingKey = bb::DeciderProvingKey_<bb::MegaFlavor>;
         using VerificationKey = bb::MegaFlavor::VerificationKey;
         auto proving_key = std::make_shared<DeciderProvingKey>(builder);
-        fprintf(stderr, "[bb] prove: proving_key built\n");
         auto verification_key = std::make_shared<VerificationKey>(proving_key->get_precomputed());
-        fprintf(stderr, "[bb] prove: verification_key built\n");
         bb::UltraProver_<bb::MegaFlavor> prover{ proving_key, verification_key };
-        fprintf(stderr, "[bb] prove: calling construct_proof...\n");
         auto proof = prover.construct_proof();
-        fprintf(stderr, "[bb] prove: construct_proof OK\n");
         auto proof_buf = to_buffer<true>(proof);
         auto vk_buf = to_buffer(*verification_key);
         if (out_proof) *out_proof = bb_malloc_copy(proof_buf);
         if (out_proof_len) *out_proof_len = proof_buf.size();
         if (out_vk) *out_vk = bb_malloc_copy(vk_buf);
         if (out_vk_len) *out_vk_len = vk_buf.size();
-        fprintf(stderr, "[bb] prove: exit (proof_len=%zu vk_len=%zu)\n", proof_buf.size(), vk_buf.size());
         return 0;
     } catch (const std::exception& e) {
         fprintf(stderr, "[bb][ERR] prove exception: %s\n", e.what());
         return 1;
     } catch (...) {
         fprintf(stderr, "[bb][ERR] prove unknown exception\n");
+        return 1;
+    }
+}
+
+// Prove using a cached compile-only Mega proving key identified by key_id.
+// Rebuilds a builder from cached ACIR + provided witness, refreshes witness polynomials in the proving key,
+// constructs the proof, and returns serialized proof bytes.
+int bb_mh_prove_with_id(const uint8_t key_id[MEGA_KEY_ID_SIZE],
+                        const uint8_t* witness,
+                        size_t witness_len,
+                        uint8_t** out_proof,
+                        size_t* out_proof_len)
+{
+    try {
+        auto id = key_id_from_bytes(key_id, MEGA_KEY_ID_SIZE);
+        auto entry = require_cached_mega_keys(id);
+        // Recreate builder with witness
+        std::vector<uint8_t> acir_copy = entry.acir_bytes;
+        std::vector<uint8_t> wit_vec(witness, witness + witness_len);
+        const acir_format::ProgramMetadata metadata{ .honk_recursion = 1 };
+        acir_format::AcirProgram program{ acir_format::circuit_buf_to_acir_format(std::move(acir_copy)),
+                                          acir_format::witness_buf_to_witness_data(std::move(wit_vec)) };
+        auto builder = acir_format::create_circuit<bb::MegaCircuitBuilder>(program, metadata);
+
+        using DeciderProvingKey = bb::DeciderProvingKey_<bb::MegaFlavor>;
+        using VerificationKey = bb::MegaFlavor::VerificationKey;
+
+        std::shared_ptr<DeciderProvingKey> proving_key;
+
+#if BB_ENABLE_INPLACE_REFRESH
+        std::shared_ptr<DeciderProvingKey> tmp_pk_for_diff;
+        [[maybe_unused]] const bool use_refresh = []() {
+            const char* e = std::getenv("BB_REFRESH_IN_PLACE");
+            return e && std::string(e) == "1";
+        }();
+
+        if (use_refresh) {
+            mh_refresh_witness_polynomials(builder, *entry.proving_key);
+
+            const bool use_deep_copy = []() {
+                const char* e = std::getenv("BB_REFRESH_DEEP_COPY");
+                return (!e) || std::string(e) == "1";
+            }();
+            const bool log_proof_diff = []() {
+                const char* e = std::getenv("BB_LOG_PROOF_DIFF");
+                return e && std::string(e) == "1";
+            }();
+
+            const bool need_tmp_pk = use_deep_copy || log_proof_diff;
+            std::shared_ptr<DeciderProvingKey> tmp_pk;
+            if (need_tmp_pk) {
+                tmp_pk = std::make_shared<DeciderProvingKey>(builder);
+            }
+            if (log_proof_diff && tmp_pk) {
+                tmp_pk_for_diff = tmp_pk;
+            }
+
+            if (use_deep_copy && tmp_pk) {
+                auto copy_polys = [](auto dst, const auto& src) {
+                    for (size_t i = 0; i < dst.size(); ++i) {
+                        dst[i] = src[i];
+                    }
+                };
+                copy_polys(entry.proving_key->polynomials.get_sigmas(), tmp_pk->polynomials.get_sigmas());
+                copy_polys(entry.proving_key->polynomials.get_ids(), tmp_pk->polynomials.get_ids());
+                copy_polys(entry.proving_key->polynomials.get_gate_selectors(), tmp_pk->polynomials.get_gate_selectors());
+                copy_polys(entry.proving_key->polynomials.get_non_gate_selectors(),
+                           tmp_pk->polynomials.get_non_gate_selectors());
+                entry.proving_key->polynomials.lagrange_first = tmp_pk->polynomials.lagrange_first;
+                entry.proving_key->polynomials.lagrange_last = tmp_pk->polynomials.lagrange_last;
+                entry.proving_key->polynomials.lagrange_ecc_op = tmp_pk->polynomials.lagrange_ecc_op;
+                entry.proving_key->polynomials.databus_id = tmp_pk->polynomials.databus_id;
+
+                copy_polys(entry.proving_key->polynomials.get_wires(), tmp_pk->polynomials.get_wires());
+                copy_polys(entry.proving_key->polynomials.get_ecc_op_wires(), tmp_pk->polynomials.get_ecc_op_wires());
+                if constexpr (bb::HasDataBus<bb::MegaFlavor>) {
+                    entry.proving_key->polynomials.calldata = tmp_pk->polynomials.calldata;
+                    entry.proving_key->polynomials.calldata_read_counts = tmp_pk->polynomials.calldata_read_counts;
+                    entry.proving_key->polynomials.calldata_read_tags = tmp_pk->polynomials.calldata_read_tags;
+                    entry.proving_key->polynomials.secondary_calldata = tmp_pk->polynomials.secondary_calldata;
+                    entry.proving_key->polynomials.secondary_calldata_read_counts =
+                        tmp_pk->polynomials.secondary_calldata_read_counts;
+                    entry.proving_key->polynomials.secondary_calldata_read_tags =
+                        tmp_pk->polynomials.secondary_calldata_read_tags;
+                    entry.proving_key->polynomials.return_data = tmp_pk->polynomials.return_data;
+                    entry.proving_key->polynomials.return_data_read_counts = tmp_pk->polynomials.return_data_read_counts;
+                    entry.proving_key->polynomials.return_data_read_tags = tmp_pk->polynomials.return_data_read_tags;
+                    entry.proving_key->polynomials.calldata_inverses = tmp_pk->polynomials.calldata_inverses;
+                    entry.proving_key->polynomials.secondary_calldata_inverses =
+                        tmp_pk->polynomials.secondary_calldata_inverses;
+                    entry.proving_key->polynomials.return_data_inverses = tmp_pk->polynomials.return_data_inverses;
+                }
+                entry.proving_key->public_inputs = tmp_pk->public_inputs;
+                entry.proving_key->memory_read_records = tmp_pk->memory_read_records;
+                entry.proving_key->memory_write_records = tmp_pk->memory_write_records;
+                entry.proving_key->polynomials.lookup_read_counts = tmp_pk->polynomials.lookup_read_counts;
+                entry.proving_key->polynomials.lookup_read_tags = tmp_pk->polynomials.lookup_read_tags;
+                entry.proving_key->polynomials.set_shifted();
+            }
+
+            entry.proving_key->commitment_key = bb::MegaFlavor::CommitmentKey();
+            entry.proving_key->is_complete = false;
+            entry.proving_key->gate_challenges.assign(entry.proving_key->gate_challenges.size(), bb::fr(0));
+            entry.proving_key->target_sum = bb::fr(0);
+            entry.proving_key->alphas = typename bb::MegaFlavor::SubrelationSeparators{};
+            entry.proving_key->relation_parameters = bb::RelationParameters<bb::fr>{};
+
+            if (use_deep_copy && tmp_pk) {
+                auto refreshed_vk = std::make_shared<VerificationKey>(entry.proving_key->get_precomputed());
+                entry.verification_key = refreshed_vk;
+            }
+
+            const bool use_tmp_for_prove = []() {
+                const char* e = std::getenv("BB_REFRESH_TMP_PROVE");
+                return e && std::string(e) == "1";
+            }();
+            if (!use_deep_copy && use_tmp_for_prove && tmp_pk) {
+                proving_key = tmp_pk;
+            } else {
+                proving_key = entry.proving_key;
+            }
+        } else
+#endif
+        {
+            proving_key = std::make_shared<DeciderProvingKey>(builder);
+            auto verification_key = std::make_shared<VerificationKey>(proving_key->get_precomputed());
+            auto id_now = key_id_from_field(verification_key->hash());
+            if (!(id_now == id)) {
+                throw std::runtime_error("prove_with_id: VK hash mismatch for cached ID");
+            }
+            entry.verification_key = verification_key;
+        }
+
+        bb::UltraProver_<bb::MegaFlavor> prover{ proving_key, entry.verification_key };
+        auto proof = prover.construct_proof();
+        auto proof_buf = to_buffer<true>(proof);
+
+#if BB_ENABLE_INPLACE_REFRESH
+        if (tmp_pk_for_diff) {
+            try {
+                bb::UltraProver_<bb::MegaFlavor> prover_tmp{ tmp_pk_for_diff, entry.verification_key };
+                auto proof_tmp = prover_tmp.construct_proof();
+                if (const char* diff = std::getenv("BB_LOG_PROOF_DIFF"); diff && std::string(diff) == "1") {
+                    const size_t min_sz = std::min(proof.size(), proof_tmp.size());
+                    size_t mismatches = 0;
+                    for (size_t i = 0; i < min_sz; ++i) {
+                        if (proof[i] != proof_tmp[i]) {
+                            ++mismatches;
+                            if (mismatches >= 8) {
+                                break;
+                            }
+                        }
+                    }
+                }
+            } catch (...) {
+                // ignore diff failures in production builds
+            }
+        }
+#endif
+
+        if (out_proof) *out_proof = bb_malloc_copy(proof_buf);
+        if (out_proof_len) *out_proof_len = proof_buf.size();
+        return 0;
+    } catch (const std::exception& e) {
+        fprintf(stderr, "[bb][ERR] prove_with_id exception: %s\n", e.what());
+        return 1;
+    } catch (...) {
+        fprintf(stderr, "[bb][ERR] prove_with_id unknown exception\n");
         return 1;
     }
 }
@@ -208,6 +622,46 @@ int bb_mh_verify(const uint8_t* proof,
         }
         if (out_ok) *out_ok = ok;
         return 0;
+    } catch (...) {
+        return 1;
+    }
+}
+
+// Verify using cached VK by key_id.
+int bb_mh_verify_with_id(const uint8_t key_id[MEGA_KEY_ID_SIZE],
+                         const uint8_t* proof,
+                         size_t proof_len,
+                         bool* out_ok)
+{
+    try {
+        auto id = key_id_from_bytes(key_id, MEGA_KEY_ID_SIZE);
+        auto entry = require_cached_mega_keys(id);
+        std::vector<uint8_t> proof_bytes(proof, proof + proof_len);
+        auto proof_obj = from_buffer<bb::HonkProof>(proof_bytes);
+        bb::MegaVerifier verifier{ entry.verification_key };
+
+        // Determine IO strategy from VK public inputs
+        using Builder = bb::MegaCircuitBuilder;
+        using DefaultIO = bb::stdlib::recursion::honk::DefaultIO<Builder>;
+        using BindingIO = bb::BindingBlockIO;
+        const size_t total_pub = static_cast<size_t>(entry.verification_key->num_public_inputs);
+        const size_t default_pub = static_cast<size_t>(DefaultIO::PUBLIC_INPUTS_SIZE);
+        size_t inner_pub = (total_pub > default_pub) ? (total_pub - default_pub) : 0;
+        if (inner_pub == 0 && total_pub > 0) {
+            inner_pub = total_pub;
+        }
+
+        bool ok = false;
+        if (inner_pub == BindingIO::PUBLIC_INPUTS_SIZE) {
+            ok = verifier.template verify_proof<BindingIO>(proof_obj).result;
+        } else {
+            ok = verifier.template verify_proof<bb::DefaultIO>(proof_obj).result;
+        }
+        if (out_ok) *out_ok = ok;
+        return 0;
+    } catch (const std::exception& e) {
+        fprintf(stderr, "[bb][ERR] verify_with_id exception: %s\n", e.what());
+        return 1;
     } catch (...) {
         return 1;
     }
@@ -339,13 +793,11 @@ int bb_batch_merge_h2(const uint8_t* proof_a,
                   size_t* out_merged_vk_len)
 {
     try {
-        fprintf(stderr, "[bb][shim] batch_merge_h2: pa=%zu, pb=%zu, vka=%zu, vkb=%zu\n", len_a, len_b, len_vk_a, len_vk_b);
         std::vector<uint8_t> pa(proof_a, proof_a + len_a);
         std::vector<uint8_t> pb(proof_b, proof_b + len_b);
         std::vector<uint8_t> vka(vk_a, vk_a + len_vk_a);
         std::vector<uint8_t> vkb(vk_b, vk_b + len_vk_b);
         auto res = bb::batch_merge_h2::merge(pa, vka, pb, vkb);
-        fprintf(stderr, "[bb][shim] batch_merge_h2: merge OK, proof=%zu, vk=%zu\n", res.merged_proof_bytes.size(), res.merged_vk_bytes.size());
         if (out_merged_proof) *out_merged_proof = bb_malloc_copy(res.merged_proof_bytes);
         if (out_merged_proof_len) *out_merged_proof_len = res.merged_proof_bytes.size();
         if (out_merged_vk) *out_merged_vk = bb_malloc_copy(res.merged_vk_bytes);

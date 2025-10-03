@@ -35,6 +35,17 @@ pub fn acir_sizes(_acir: &[u8]) -> Result<(u32, u32)> {
     }
 }
 
+/// Compile a Mega circuit from ACIR and cache the proving/verification keys in-process.
+/// Returns a 32-byte deterministic key ID derived from the VK.
+pub fn compile_mega(_acir: &[u8]) -> Result<[u8; 32]> {
+    unsafe {
+        let mut out = [0u8; 32];
+        let rc = aztec_barretenberg_sys_rs::bb_acir_compile_mega_honk(_acir.as_ptr(), _acir.len(), out.as_mut_ptr());
+        if rc != 0 { return Err(BbError::Failure("compile_mega")); }
+        Ok(out)
+    }
+}
+
 pub fn write_vk_mega_honk(_acir: &[u8]) -> Result<Vk> {
     unsafe {
         let mut out_ptr: *mut u8 = std::ptr::null_mut();
@@ -80,6 +91,33 @@ pub fn verify_mega_honk(_proof: &[u8], _vk: &[u8]) -> Result<bool> {
             _proof.as_ptr(), _proof.len(), _vk.as_ptr(), _vk.len(), &mut ok,
         );
         if rc != 0 { return Err(BbError::Failure("verify_mega_honk")); }
+        Ok(ok)
+    }
+}
+
+/// Prove using a cached compile-only key identified by key_id.
+pub fn prove_with_id(key_id: &[u8; 32], witness: &[u8]) -> Result<Proof> {
+    unsafe {
+        let mut p_ptr: *mut u8 = std::ptr::null_mut();
+        let mut p_len: usize = 0;
+        let rc = aztec_barretenberg_sys_rs::bb_mh_prove_with_id(
+            key_id.as_ptr(), witness.as_ptr(), witness.len(), &mut p_ptr, &mut p_len,
+        );
+        if rc != 0 { return Err(BbError::Failure("prove_with_id")); }
+        let proof = Proof(std::slice::from_raw_parts(p_ptr, p_len).to_vec());
+        aztec_barretenberg_sys_rs::bb_free(p_ptr);
+        Ok(proof)
+    }
+}
+
+/// Verify using a cached VK identified by key_id.
+pub fn verify_with_id(key_id: &[u8; 32], proof: &[u8]) -> Result<bool> {
+    unsafe {
+        let mut ok = false;
+        let rc = aztec_barretenberg_sys_rs::bb_mh_verify_with_id(
+            key_id.as_ptr(), proof.as_ptr(), proof.len(), &mut ok,
+        );
+        if rc != 0 { return Err(BbError::Failure("verify_with_id")); }
         Ok(ok)
     }
 }

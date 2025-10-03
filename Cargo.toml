@@ -4,4 +4,3 @@ members = [
   "crates/aztec-barretenberg-rs",
 ]
 resolver = "2"
-
