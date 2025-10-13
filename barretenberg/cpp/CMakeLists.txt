@@ -9,6 +9,8 @@ project(
     LANGUAGES CXX C
 )
 
+set(CMAKE_POSITION_INDEPENDENT_CODE ON)
+
 # Add doxygen build command
 find_package(Doxygen)
 if (DOXYGEN_FOUND)
@@ -31,7 +33,7 @@ option(ENABLE_HEAVY_TESTS "Enable heavy tests when collecting coverage" OFF)
 # Note: Must do 'sudo apt-get install libdw-dev' or equivalent
 option(CHECK_CIRCUIT_STACKTRACES "Enable (slow) stack traces for check circuit" OFF)
 option(ENABLE_TRACY "Enable low-medium overhead profiling for memory and performance with tracy" OFF)
-option(ENABLE_PIC "Builds with position independent code" OFF)
+option(ENABLE_PIC "Builds with position independent code" ON)
 option(SYNTAX_ONLY "only check syntax (-fsyntax-only)" OFF)
 
 if(CMAKE_SYSTEM_PROCESSOR MATCHES "aarch64" OR CMAKE_SYSTEM_PROCESSOR MATCHES "arm64")
@@ -101,6 +103,8 @@ set(CMAKE_C_EXTENSIONS ON)
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED TRUE)
 set(CMAKE_CXX_EXTENSIONS ON)
+set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -fPIC -fvisibility=hidden")
+set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fPIC -fvisibility=hidden")
 
 if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
     add_compile_options(-fbracket-depth=512)

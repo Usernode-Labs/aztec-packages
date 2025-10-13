@@ -61,9 +61,7 @@ else()
 endif()
 
 if (ENABLE_PIC AND CMAKE_CXX_COMPILER_ID MATCHES "Clang")
-  message("Building with Position Independent Code")
-  set(CMAKE_CXX_FLAGS  "${CMAKE_CXX_FLAGS} -fPIC")
-  set(CMAKE_C_FLAGS  "${CMAKE_C_FLAGS} -fPIC")
+  message(STATUS "Building with Position Independent Code")
   add_subdirectory(barretenberg/nodejs_module)
 endif()
 
@@ -198,6 +196,7 @@ add_library(
     STATIC
     ${BARRETENBERG_TARGET_OBJECTS}
 )
+set_target_properties(barretenberg PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
 if(WASM)
     # When building this wasm "executable", we include the wasi module but exclude the env module.
@@ -275,5 +274,6 @@ add_library(
     STATIC
     bb_rust_api.cpp
 )
+set_target_properties(bb_rust_api PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
 target_link_libraries(bb_rust_api PRIVATE barretenberg)

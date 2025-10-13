@@ -96,6 +96,7 @@ jobs:
           cmake -S barretenberg/cpp -B build \
             -DCMAKE_BUILD_TYPE=RelWithDebInfo \
             -GNinja \
+            -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
             -DCMAKE_C_COMPILER=${{ env.CC }} \
             -DCMAKE_CXX_COMPILER=${{ env.CXX }} \
             -DCMAKE_CXX_FLAGS="-Wno-error=shorten-64-to-32"
@@ -106,6 +107,7 @@ jobs:
           cmake -S barretenberg/cpp -B build \
             -DCMAKE_BUILD_TYPE=RelWithDebInfo \
             -GNinja \
+            -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
             -DCMAKE_SYSTEM_NAME=Linux \
             -DCMAKE_SYSTEM_PROCESSOR=aarch64 \
             -DTARGET_ARCH=generic \
@@ -127,12 +129,46 @@ jobs:
           cmake -S barretenberg/cpp -B build \
             -DCMAKE_BUILD_TYPE=RelWithDebInfo \
             -GNinja \
+            -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
             -DCMAKE_C_COMPILER=${{ env.CC }} \
             -DCMAKE_CXX_COMPILER=${{ env.CXX }}
 
       - name: Build static libraries (minimal set)
         run: |
           cmake --build build --target barretenberg env crypto_schnorr crypto_pedersen_commitment crypto_pedersen_hash crypto_poseidon2 ecc bb_rust_api
+
+      - name: Verify PIC flags (Linux)
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          libs=(
+            libbarretenberg.a
+            libenv.a
+            libcrypto_schnorr.a
+            libcrypto_pedersen_commitment.a
+            libcrypto_pedersen_hash.a
+            libcrypto_poseidon2.a
+            libecc.a
+            libbb_rust_api.a
+          )
+          for lib in "${libs[@]}"; do
+            path="build/lib/${lib}"
+            if [ ! -f "$path" ]; then
+              echo "Missing library for PIC verification: $path" >&2
+              exit 1
+            fi
+            if objdump -f "$path" | grep -q "EXEC_P"; then
+              echo "Found EXEC_P flag in $lib" >&2
+              objdump -f "$path" >&2
+              exit 1
+            fi
+            if ! objdump -f "$path" | grep -q "HAS_RELOC"; then
+              echo "Missing HAS_RELOC flag in $lib" >&2
+              objdump -f "$path" >&2
+              exit 1
+            fi
+          done
 
       - name: Build C++ shim archive (macOS fallback)
         if: runner.os == 'macOS'

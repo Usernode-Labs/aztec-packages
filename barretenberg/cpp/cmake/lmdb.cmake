@@ -21,7 +21,10 @@ ExternalProject_Add(
 
 add_library(lmdb STATIC IMPORTED GLOBAL)
 add_dependencies(lmdb lmdb_repo)
-set_target_properties(lmdb PROPERTIES IMPORTED_LOCATION ${LMDB_LIB})
+set_target_properties(lmdb PROPERTIES
+    IMPORTED_LOCATION ${LMDB_LIB}
+    INTERFACE_POSITION_INDEPENDENT_CODE ON
+)
 
 add_library(lmdb_objects OBJECT IMPORTED GLOBAL)
 add_dependencies(lmdb_objects lmdb_repo)
