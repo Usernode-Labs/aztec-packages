@@ -62,14 +62,29 @@ fn built_lib_present(lib_dir: &Path) -> bool {
 }
 
 fn target_triple() -> String {
+    // Prefer explicit TARGET if provided (captures ios variants)
+    if let Ok(t) = env::var("TARGET") {
+        match t.as_str() {
+            "x86_64-unknown-linux-gnu"
+            | "aarch64-unknown-linux-gnu"
+            | "aarch64-apple-darwin"
+            | "aarch64-apple-ios-sim"
+            | "aarch64-apple-ios" => return t,
+            _ => {}
+        }
+    }
     let arch = env::var("CARGO_CFG_TARGET_ARCH").unwrap_or_default();
     let os = env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
     match (arch.as_str(), os.as_str()) {
         ("x86_64", "linux") => "x86_64-unknown-linux-gnu".to_string(),
         ("aarch64", "linux") => "aarch64-unknown-linux-gnu".to_string(),
         ("aarch64", "macos") => "aarch64-apple-darwin".to_string(),
+        ("aarch64", "ios") => "aarch64-apple-ios-sim".to_string(),
         _ => {
-            println!("cargo:warning=Unsupported target {}/{}, falling back to local C++ build.", arch, os);
+            println!(
+                "cargo:warning=Unsupported target {}/{}, falling back to local C++ build.",
+                arch, os
+            );
             String::new()
         }
     }
@@ -384,7 +399,11 @@ fn main() {
 
     // Link against barretenberg and related static libs
     println!("cargo:rustc-link-search=native={}", bb_lib_dir.display());
-    println!("cargo:rustc-link-arg=-Wl,--start-group");
+    let target_os = env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
+    let is_linux = target_os == "linux";
+    if is_linux {
+        println!("cargo:rustc-link-arg=-Wl,--start-group");
+    }
     println!("cargo:rustc-link-lib=static=barretenberg");
     println!("cargo:rustc-link-lib=static=env");
     println!("cargo:rustc-link-lib=static=crypto_pedersen_commitment");
@@ -392,7 +411,9 @@ fn main() {
     println!("cargo:rustc-link-lib=static=crypto_poseidon2");
     println!("cargo:rustc-link-lib=static=ecc");
     println!("cargo:rustc-link-lib=static=crypto_schnorr");
-    println!("cargo:rustc-link-arg=-Wl,--end-group");
+    if is_linux {
+        println!("cargo:rustc-link-arg=-Wl,--end-group");
+    }
 
     if env::var("SANITIZE").ok().as_deref() == Some("address") {
         println!("cargo:rustc-link-lib=asan");
@@ -403,9 +424,8 @@ fn main() {
     println!("cargo:rustc-link-lib=dylib=pthread");
 
     // Platform-specific C++ runtime
-    let target_os = env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
-    if target_os == "macos" {
-        println!("cargo:rustc-link-lib=dylib=c++"); // libc++ on macOS
+    if target_os == "macos" || target_os == "ios" {
+        println!("cargo:rustc-link-lib=dylib=c++"); // libc++ on Apple (macOS/iOS)
     } else {
         // Link libstdc++/libgcc dynamically on Linux (ensures symbols resolved)
         println!("cargo:rustc-link-lib=dylib=stdc++");

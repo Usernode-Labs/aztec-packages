@@ -62,7 +62,10 @@ endif()
 
 if (ENABLE_PIC AND CMAKE_CXX_COMPILER_ID MATCHES "Clang")
   message(STATUS "Building with Position Independent Code")
-  add_subdirectory(barretenberg/nodejs_module)
+  # Only build NodeJS module when explicitly requested
+  if (BB_BUILD_NODEJS_MODULE)
+    add_subdirectory(barretenberg/nodejs_module)
+  endif()
 endif()
 
 add_subdirectory(barretenberg/api)

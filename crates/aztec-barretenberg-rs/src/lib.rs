@@ -489,49 +489,9 @@ impl acvm::blackbox_solver::BlackBoxFunctionSolver<FE> for BarretenbergBlackBoxS
     }
 }
 
-pub fn schnorr_poseidon2_sign(msg: &[u8], sk32: &[u8; 32]) -> Result<[u8; 64]> {
-    unsafe {
-        let mut sig = [0u8; 64];
-        let rc = aztec_barretenberg_sys_rs::bb_schnorr_poseidon2_sign(
-            msg.as_ptr(), msg.len(), sk32.as_ptr(), sig.as_mut_ptr(),
-        );
-        if rc != 0 { return Err(BbError::Failure("schnorr_poseidon2_sign")); }
-        Ok(sig)
-    }
-}
-
-pub fn schnorr_poseidon2_verify(msg: &[u8], sig64: &[u8; 64], pk32: &[u8; 32]) -> Result<bool> {
-    unsafe {
-        let mut ok = false;
-        let rc = aztec_barretenberg_sys_rs::bb_schnorr_poseidon2_verify(
-            msg.as_ptr(), msg.len(), sig64.as_ptr(), pk32.as_ptr(), &mut ok,
-        );
-        if rc != 0 { return Err(BbError::Failure("schnorr_poseidon2_verify")); }
-        Ok(ok)
-    }
-}
-
-pub fn schnorr_pedersen_sign(msg: &[u8], sk32: &[u8; 32]) -> Result<[u8; 64]> {
-    unsafe {
-        let mut sig = [0u8; 64];
-        let rc = aztec_barretenberg_sys_rs::bb_schnorr_pedersen_sign(
-            msg.as_ptr(), msg.len(), sk32.as_ptr(), sig.as_mut_ptr(),
-        );
-        if rc != 0 { return Err(BbError::Failure("schnorr_pedersen_sign")); }
-        Ok(sig)
-    }
-}
-
-pub fn schnorr_pedersen_verify_xy(msg: &[u8], sig64: &[u8; 64], pkx32: &[u8; 32], pky32: &[u8; 32]) -> Result<bool> {
-    unsafe {
-        let mut ok = false;
-        let rc = aztec_barretenberg_sys_rs::bb_schnorr_pedersen_verify_xy(
-            msg.as_ptr(), msg.len(), sig64.as_ptr(), pkx32.as_ptr(), pky32.as_ptr(), &mut ok,
-        );
-        if rc != 0 { return Err(BbError::Failure("schnorr_pedersen_verify_xy")); }
-        Ok(ok)
-    }
-}
+// Removed experimental Schnorr variants (Poseidon2 and Pedersen) that were not used by
+// usernode/usernode-circuits to simplify the API surface and avoid linker issues on iOS.
+// Only the Blake2s prehash + XY verification flow is retained.
 
 pub fn grumpkin_derive_pubkey(sk32: &[u8; 32]) -> Result<([u8;32],[u8;32])> {
     unsafe {

@@ -870,36 +870,7 @@ int bb_poseidon2_permutation_bn254(const uint8_t* inputs_be, size_t element_coun
     }
 }
 
-int bb_schnorr_poseidon2_verify_xy(const uint8_t* msg,
-                                   size_t msg_len,
-                                   const uint8_t sig64[64],
-                                   const uint8_t pkx32[32],
-                                   const uint8_t pky32[32],
-                                   bool* out_ok)
-{
-    try {
-        std::string message(reinterpret_cast<const char*>(msg), msg_len);
-        uint64_t xl[4];
-        uint64_t yl[4];
-        be32_to_le_limbs(pkx32, xl);
-        be32_to_le_limbs(pky32, yl);
-        bb::grumpkin::fq x(xl[0], xl[1], xl[2], xl[3]);
-        bb::grumpkin::fq y(yl[0], yl[1], yl[2], yl[3]);
-        bb::grumpkin::g1::affine_element pubk(x.to_montgomery_form(), y.to_montgomery_form());
-        std::array<uint8_t, 32> s_arr;
-        std::array<uint8_t, 32> e_arr;
-        std::copy(sig64, sig64 + 32, s_arr.begin());
-        std::copy(sig64 + 32, sig64 + 64, e_arr.begin());
-        bb::crypto::schnorr_signature sig{ s_arr, e_arr };
-        bool ok = bb::crypto::schnorr_verify_signature<bb::crypto::Poseidon2Hasher, bb::grumpkin::fq, bb::grumpkin::fr, bb::grumpkin::g1>(
-            message, pubk, sig);
-        if (out_ok)
-            *out_ok = ok;
-        return 0;
-    } catch (...) {
-        return 1;
-    }
-}
+// Removed experimental Poseidon2 Schnorr verify (_xy)
 
 // Pedersen commitment on grumpkin: inputs reduced into fq
 int bb_pedersen_commit_grumpkin(
@@ -1247,92 +1218,10 @@ int bb_grumpkin_fr_mul(const uint8_t* a32, const uint8_t* b32, uint8_t** out_ptr
         return 1;
     }
 }
-}
-// Simple Pedersen-bytes hasher: chunk bytes into 32-byte big-endian field elements over grumpkin::fq,
-// then hash with crypto::pedersen_hash::hash(inputs, domain=0). Returns 32-byte big-endian digest.
-struct PedersenBytesHasher {
-    static constexpr size_t BLOCK_SIZE = 64;
-    static constexpr size_t OUTPUT_SIZE = 32;
-    static std::vector<uint8_t> hash(const std::vector<uint8_t>& message)
-    {
-        std::vector<bb::grumpkin::fq> inputs;
-        if (!message.empty()) {
-            size_t i = 0;
-            while (i < message.size()) {
-                uint8_t buf[32] = { 0 };
-                size_t rem = message.size() - i;
-                size_t copy = rem >= 32 ? 32 : rem;
-                std::memcpy(buf + (32 - copy), &message[i], copy);
-                uint64_t limbs[4];
-                be32_to_le_limbs(buf, limbs);
-                bb::grumpkin::fq x(limbs[0], limbs[1], limbs[2], limbs[3]);
-                inputs.push_back(x.to_montgomery_form());
-                i += copy;
-            }
-        } else {
-            inputs.push_back(bb::grumpkin::fq::one());
-        }
-        auto h = bb::crypto::pedersen_hash::hash(inputs, 0);
-        auto nh = h.from_montgomery_form();
-        std::vector<uint8_t> out(32);
-        le_limbs_to_be32(nh.data, out.data());
-        return out;
-    }
-};
+} 
+// Removed experimental Pedersen Schnorr (sign/verify) and its hasher
+
 extern "C" {
-int bb_schnorr_pedersen_sign(const uint8_t* msg,
-                              size_t msg_len,
-                              const uint8_t* sk32,
-                              uint8_t sig64_out[64])
-{
-    try {
-        std::string message(reinterpret_cast<const char*>(msg), msg_len);
-        uint64_t sl[4];
-        be32_to_le_limbs(sk32, sl);
-        bb::grumpkin::fr sk(sl[0], sl[1], sl[2], sl[3]);
-        sk = sk.to_montgomery_form();
-        bb::grumpkin::g1::affine_element pk = bb::grumpkin::g1::one * sk;
-        bb::crypto::schnorr_key_pair<bb::grumpkin::fr, bb::grumpkin::g1> kp{ sk, pk };
-        auto sig = bb::crypto::schnorr_construct_signature<PedersenBytesHasher, bb::grumpkin::fq>(message, kp);
-        std::memcpy(sig64_out, sig.s.data(), 32);
-        std::memcpy(sig64_out + 32, sig.e.data(), 32);
-        return 0;
-    } catch (...) {
-        return 1;
-    }
-}
-
-
-int bb_schnorr_pedersen_verify_xy(const uint8_t* msg,
-                                  size_t msg_len,
-                                  const uint8_t sig64[64],
-                                  const uint8_t pkx32[32],
-                                  const uint8_t pky32[32],
-                                  bool* out_ok)
-{
-    try {
-        std::string message(reinterpret_cast<const char*>(msg), msg_len);
-        uint64_t xl[4], yl[4];
-        be32_to_le_limbs(pkx32, xl);
-        be32_to_le_limbs(pky32, yl);
-        bb::grumpkin::fq x(xl[0], xl[1], xl[2], xl[3]);
-        bb::grumpkin::fq y(yl[0], yl[1], yl[2], yl[3]);
-        bb::grumpkin::g1::affine_element pubk(x.to_montgomery_form(), y.to_montgomery_form());
-        std::array<uint8_t, 32> s_arr;
-        std::array<uint8_t, 32> e_arr;
-        std::copy(sig64, sig64 + 32, s_arr.begin());
-        std::copy(sig64 + 32, sig64 + 64, e_arr.begin());
-        bb::crypto::schnorr_signature sig{ s_arr, e_arr };
-        bool ok = bb::crypto::schnorr_verify_signature<PedersenBytesHasher, bb::grumpkin::fq, bb::grumpkin::fr, bb::grumpkin::g1>(
-            message, pubk, sig);
-        if (out_ok)
-            *out_ok = ok;
-        return 0;
-    } catch (...) {
-        return 1;
-    }
-}
-
 int bb_grumpkin_derive_pubkey(const uint8_t sk32[32], uint8_t out_x_be[32], uint8_t out_y_be[32])
 {
     try {
@@ -1351,8 +1240,6 @@ int bb_grumpkin_derive_pubkey(const uint8_t sk32[32], uint8_t out_x_be[32], uint
     }
 }
 
-
-
 // Blake2s prehash hasher for standard Schnorr
 struct Blake2sBytesHasher {
     static constexpr size_t BLOCK_SIZE = 64;
@@ -1363,7 +1250,6 @@ struct Blake2sBytesHasher {
         return std::vector<uint8_t>(out.begin(), out.end());
     }
 };
-extern "C" {
 int bb_schnorr_blake2s_sign(const uint8_t* msg,
                              size_t msg_len,
                              const uint8_t* sk32,
@@ -1415,28 +1301,7 @@ int bb_schnorr_blake2s_verify_xy(const uint8_t* msg,
 }
 }
 
-int bb_schnorr_poseidon2_sign(const uint8_t* msg,
-                              size_t msg_len,
-                              const uint8_t* sk32,
-                              uint8_t sig64_out[64])
-{
-    try {
-        std::string message(reinterpret_cast<const char*>(msg), msg_len);
-        uint64_t sl[4];
-        be32_to_le_limbs(sk32, sl);
-        bb::grumpkin::fr sk(sl[0], sl[1], sl[2], sl[3]);
-        sk = sk.to_montgomery_form();
-        bb::grumpkin::g1::affine_element pk = bb::grumpkin::g1::one * sk;
-        bb::crypto::schnorr_key_pair<bb::grumpkin::fr, bb::grumpkin::g1> kp{ sk, pk };
-        auto sig = bb::crypto::schnorr_construct_signature<bb::crypto::Poseidon2Hasher, bb::grumpkin::fq>(message, kp);
-        std::memcpy(sig64_out, sig.s.data(), 32);
-        std::memcpy(sig64_out + 32, sig.e.data(), 32);
-        return 0;
-    } catch (...) {
-        return 1;
-    }
-}
-} // extern "C"
+// Removed experimental Poseidon2 Schnorr sign
 // Compute Poseidon2 hash over proof fields with a domain tag (as used in batch circuit binding).
 extern "C" int bb_mh_proof_fields_hash(const uint8_t* proof,
                             size_t proof_len,

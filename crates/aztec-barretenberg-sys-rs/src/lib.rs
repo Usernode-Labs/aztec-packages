@@ -102,36 +102,7 @@ extern "C" {
         out_merged_vk_len: *mut size_t,
     ) -> c_int;
 
-    pub fn bb_schnorr_poseidon2_sign(
-        msg: *const u8,
-        msg_len: size_t,
-        sk32: *const u8,
-        sig64_out: *mut u8,
-    ) -> c_int;
-
-    pub fn bb_schnorr_poseidon2_verify(
-        msg: *const u8,
-        msg_len: size_t,
-        sig64: *const u8,
-        pk32: *const u8,
-        out_ok: *mut bool,
-    ) -> c_int;
-
-    pub fn bb_schnorr_poseidon2_verify_xy(
-        msg: *const u8,
-        msg_len: size_t,
-        sig64: *const u8,
-        pkx32: *const u8,
-        pky32: *const u8,
-        out_ok: *mut bool,
-    ) -> c_int;
-
-    pub fn bb_schnorr_pedersen_sign(
-        msg: *const u8,
-        msg_len: size_t,
-        sk32: *const u8,
-        sig64_out: *mut u8,
-    ) -> c_int;
+    // Removed unused Poseidon2/Pedersen Schnorr FFI to simplify API
 
     pub fn bb_schnorr_blake2s_sign(
         msg: *const u8,
@@ -141,17 +112,6 @@ extern "C" {
     ) -> c_int;
 
     pub fn bb_schnorr_blake2s_verify_xy(
-        msg: *const u8,
-        msg_len: size_t,
-        sig64: *const u8,
-        pkx32: *const u8,
-        pky32: *const u8,
-        out_ok: *mut bool,
-    ) -> c_int;
-
-
-
-    pub fn bb_schnorr_pedersen_verify_xy(
         msg: *const u8,
         msg_len: size_t,
         sig64: *const u8,

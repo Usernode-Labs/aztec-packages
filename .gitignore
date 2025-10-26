@@ -13,6 +13,12 @@ terraform.tfstate*
 bench-out
 target/
 
+# Local build outputs and packaging staging
+barretenberg/cpp/build-*/
+staging/
+staging-*/
+staging-ios-sim/
+
 # Local Netlify folder
 .netlify
 
