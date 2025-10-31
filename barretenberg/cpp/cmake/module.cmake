@@ -87,7 +87,7 @@ function(barretenberg_module MODULE_NAME)
     endif()
 
     file(GLOB_RECURSE TEST_SOURCE_FILES *.test.cpp)
-    if(TEST_SOURCE_FILES AND NOT FUZZING)
+    if(BB_ENABLE_TESTS AND TEST_SOURCE_FILES AND NOT FUZZING)
         add_library(
             ${MODULE_NAME}_test_objects
             OBJECT
@@ -205,7 +205,7 @@ function(barretenberg_module MODULE_NAME)
     endif()
 
     file(GLOB_RECURSE BENCH_SOURCE_FILES *.bench.cpp)
-    if(BENCH_SOURCE_FILES AND NOT FUZZING)
+    if(BB_ENABLE_BENCH AND BENCH_SOURCE_FILES AND NOT FUZZING)
         foreach(BENCHMARK_SOURCE ${BENCH_SOURCE_FILES})
             get_filename_component(BENCHMARK_NAME ${BENCHMARK_SOURCE} NAME_WE) # extract name without extension
             add_library(

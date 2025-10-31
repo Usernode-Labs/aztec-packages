@@ -103,7 +103,9 @@ add_subdirectory(barretenberg/stdlib)
 add_subdirectory(barretenberg/stdlib_circuit_builders)
 add_subdirectory(barretenberg/sumcheck)
 add_subdirectory(barretenberg/transcript)
-add_subdirectory(barretenberg/translator_vm)
+if(BB_BUILD_TRANSLATOR_VM)
+  add_subdirectory(barretenberg/translator_vm)
+endif()
 add_subdirectory(barretenberg/ultra_honk)
 add_subdirectory(barretenberg/wasi)
 if(NOT FUZZING)
@@ -185,6 +187,13 @@ set(BARRETENBERG_TARGET_OBJECTS
 if(NOT DISABLE_AZTEC_VM AND NOT FUZZING)
     # enable AVM
     list(APPEND BARRETENBERG_TARGET_OBJECTS $<TARGET_OBJECTS:vm2_objects>)
+endif()
+
+# Exclude translator VM object libraries when disabled
+if(NOT BB_BUILD_TRANSLATOR_VM)
+  list(REMOVE_ITEM BARRETENBERG_TARGET_OBJECTS 
+    $<TARGET_OBJECTS:translator_vm_objects> 
+    $<TARGET_OBJECTS:stdlib_translator_vm_verifier_objects>)
 endif()
 
 if(NOT WASM AND NOT FUZZING)

@@ -7,7 +7,6 @@
 #include "barretenberg/polynomials/polynomial.hpp"
 
 #include "./process_buckets.hpp"
-#include "./scalar_multiplication.hpp"
 
 #include "./bitvector.hpp"
 namespace bb::scalar_multiplication {

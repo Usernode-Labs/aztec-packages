@@ -62,14 +62,15 @@ fn built_lib_present(lib_dir: &Path) -> bool {
 }
 
 fn target_triple() -> String {
-    // Prefer explicit TARGET if provided (captures ios variants)
+    // Prefer explicit TARGET if provided (captures ios/android variants)
     if let Ok(t) = env::var("TARGET") {
         match t.as_str() {
             "x86_64-unknown-linux-gnu"
             | "aarch64-unknown-linux-gnu"
             | "aarch64-apple-darwin"
             | "aarch64-apple-ios-sim"
-            | "aarch64-apple-ios" => return t,
+            | "aarch64-apple-ios"
+            | "aarch64-linux-android" => return t,
             _ => {}
         }
     }
@@ -80,6 +81,7 @@ fn target_triple() -> String {
         ("aarch64", "linux") => "aarch64-unknown-linux-gnu".to_string(),
         ("aarch64", "macos") => "aarch64-apple-darwin".to_string(),
         ("aarch64", "ios") => "aarch64-apple-ios-sim".to_string(),
+        ("aarch64", "android") => "aarch64-linux-android".to_string(),
         _ => {
             println!(
                 "cargo:warning=Unsupported target {}/{}, falling back to local C++ build.",
@@ -426,6 +428,9 @@ fn main() {
     // Platform-specific C++ runtime
     if target_os == "macos" || target_os == "ios" {
         println!("cargo:rustc-link-lib=dylib=c++"); // libc++ on Apple (macOS/iOS)
+    } else if target_os == "android" {
+        // Android NDK's libc++
+        println!("cargo:rustc-link-lib=dylib=c++_shared");
     } else {
         // Link libstdc++/libgcc dynamically on Linux (ensures symbols resolved)
         println!("cargo:rustc-link-lib=dylib=stdc++");
