@@ -158,6 +158,16 @@ extern "C" {
         out_x_be: *mut u8,
         out_y_be: *mut u8,
     ) -> c_int;
+    pub fn bb_grumpkin_compress(
+        pk_x_be: *const u8,
+        pk_y_be: *const u8,
+        out_comp_be: *mut u8,
+    ) -> c_int;
+    pub fn bb_grumpkin_decompress(
+        comp_be: *const u8,
+        out_x_be: *mut u8,
+        out_y_be: *mut u8,
+    ) -> c_int;
 
     pub fn bb_grumpkin_msm(
         xs_be: *const u8,

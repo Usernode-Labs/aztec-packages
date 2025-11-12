@@ -836,6 +836,29 @@ static inline void le_limbs_to_be32(const uint64_t in_le[4], uint8_t* out_be)
     }
 }
 
+static inline uint256_t be32_to_uint256(const uint8_t in_be[32])
+{
+    uint64_t limbs[4];
+    be32_to_le_limbs(in_be, limbs);
+    return uint256_t(limbs[0], limbs[1], limbs[2], limbs[3]);
+}
+
+static inline void uint256_to_be32(const uint256_t& value, uint8_t out_be[32])
+{
+    le_limbs_to_be32(value.data, out_be);
+}
+
+static inline bb::grumpkin::g1::affine_element grumpkin_affine_from_xy(const uint8_t* xbe, const uint8_t* ybe)
+{
+    uint64_t xl[4];
+    uint64_t yl[4];
+    be32_to_le_limbs(xbe, xl);
+    be32_to_le_limbs(ybe, yl);
+    bb::grumpkin::fq x(xl[0], xl[1], xl[2], xl[3]);
+    bb::grumpkin::fq y(yl[0], yl[1], yl[2], yl[3]);
+    return bb::grumpkin::g1::affine_element(x.to_montgomery_form(), y.to_montgomery_form());
+}
+
 // Poseidon2 permutation over BN254 Fr; len must be 4.
 int bb_poseidon2_permutation_bn254(const uint8_t* inputs_be, size_t element_count, uint8_t** out_be, size_t* out_len)
 {
@@ -933,22 +956,47 @@ int bb_grumpkin_ec_add(
     uint8_t out_y_be[32])
 {
     try {
-        auto to_affine = [](const uint8_t* xbe, const uint8_t* ybe) {
-            uint64_t xl[4], yl[4];
-            be32_to_le_limbs(xbe, xl);
-            be32_to_le_limbs(ybe, yl);
-            bb::grumpkin::fq x(xl[0], xl[1], xl[2], xl[3]);
-            bb::grumpkin::fq y(yl[0], yl[1], yl[2], yl[3]);
-            return bb::grumpkin::g1::affine_element(x.to_montgomery_form(), y.to_montgomery_form());
-        };
-        auto A = to_affine(pk1_x_be, pk1_y_be);
-        auto B = to_affine(pk2_x_be, pk2_y_be);
+        auto A = grumpkin_affine_from_xy(pk1_x_be, pk1_y_be);
+        auto B = grumpkin_affine_from_xy(pk2_x_be, pk2_y_be);
         bb::grumpkin::g1::element eA(A);
         bb::grumpkin::g1::element eB(B);
         auto S = eA + eB;
         bb::grumpkin::g1::affine_element R(S);
         auto nx = R.x.from_montgomery_form();
         auto ny = R.y.from_montgomery_form();
+        le_limbs_to_be32(nx.data, out_x_be);
+        le_limbs_to_be32(ny.data, out_y_be);
+        return 0;
+    } catch (...) {
+        return 1;
+    }
+}
+
+int bb_grumpkin_compress(const uint8_t pk_x_be[32], const uint8_t pk_y_be[32], uint8_t out_comp_be[32])
+{
+    try {
+        auto P = grumpkin_affine_from_xy(pk_x_be, pk_y_be);
+        if (!P.on_curve() || P.is_point_at_infinity()) {
+            return 2;
+        }
+        auto compressed = P.compress();
+        uint256_to_be32(compressed, out_comp_be);
+        return 0;
+    } catch (...) {
+        return 1;
+    }
+}
+
+int bb_grumpkin_decompress(const uint8_t comp_be[32], uint8_t out_x_be[32], uint8_t out_y_be[32])
+{
+    try {
+        auto compressed = be32_to_uint256(comp_be);
+        auto P = bb::grumpkin::g1::affine_element::from_compressed(compressed);
+        if (!P.on_curve() || P.is_point_at_infinity()) {
+            return 2;
+        }
+        auto nx = P.x.from_montgomery_form();
+        auto ny = P.y.from_montgomery_form();
         le_limbs_to_be32(nx.data, out_x_be);
         le_limbs_to_be32(ny.data, out_y_be);
         return 0;

@@ -503,6 +503,39 @@ pub fn grumpkin_derive_pubkey(sk32: &[u8; 32]) -> Result<([u8;32],[u8;32])> {
     }
 }
 
+/// Compress a Grumpkin affine point (x,y) into the 32-byte legacy format.
+pub fn grumpkin_compress(x_be: [u8; 32], y_be: [u8; 32]) -> Result<[u8; 32]> {
+    unsafe {
+        let mut out = [0u8; 32];
+        let rc = aztec_barretenberg_sys_rs::bb_grumpkin_compress(
+            x_be.as_ptr(),
+            y_be.as_ptr(),
+            out.as_mut_ptr(),
+        );
+        if rc != 0 {
+            return Err(BbError::Failure("grumpkin_compress"));
+        }
+        Ok(out)
+    }
+}
+
+/// Decompress a 32-byte Grumpkin point encoding back into affine coordinates.
+pub fn grumpkin_decompress(comp_be: [u8; 32]) -> Result<([u8; 32], [u8; 32])> {
+    unsafe {
+        let mut x = [0u8; 32];
+        let mut y = [0u8; 32];
+        let rc = aztec_barretenberg_sys_rs::bb_grumpkin_decompress(
+            comp_be.as_ptr(),
+            x.as_mut_ptr(),
+            y.as_mut_ptr(),
+        );
+        if rc != 0 {
+            return Err(BbError::Failure("grumpkin_decompress"));
+        }
+        Ok((x, y))
+    }
+}
+
 
 pub fn schnorr_blake2s_sign(msg: &[u8], sk32: &[u8; 32]) -> Result<[u8; 64]> {
     unsafe {
@@ -746,5 +779,43 @@ pub fn fr_mul_mod(a_be: [u8; 32], b_be: [u8; 32]) -> Result<[u8; 32]> {
         out.copy_from_slice(slice);
         aztec_barretenberg_sys_rs::bb_free(out_ptr);
         Ok(out)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn scalar_bytes(val: u64) -> [u8; 32] {
+        let mut out = [0u8; 32];
+        out[24..].copy_from_slice(&val.to_be_bytes());
+        out
+    }
+
+    #[test]
+    fn grumpkin_compression_roundtrip_generator() {
+        let sk = scalar_bytes(1);
+        let (x, y) = grumpkin_derive_pubkey(&sk).expect("derive");
+        let comp = grumpkin_compress(x, y).expect("compress");
+        let (rx, ry) = grumpkin_decompress(comp).expect("decompress");
+        assert_eq!(rx, x);
+        assert_eq!(ry, y);
+    }
+
+    #[test]
+    fn grumpkin_compression_roundtrip_multiple_scalars() {
+        for scalar in [2u64, 42, 1_234_567, 0xdead_beef] {
+            let sk = scalar_bytes(scalar);
+            let (x, y) = grumpkin_derive_pubkey(&sk).expect("derive");
+            let comp = grumpkin_compress(x, y).expect("compress");
+            let (rx, ry) = grumpkin_decompress(comp).expect("decompress");
+            assert_eq!(rx, x);
+            assert_eq!(ry, y);
+        }
+    }
+
+    #[test]
+    fn grumpkin_decompress_rejects_invalid_bytes() {
+        assert!(grumpkin_decompress([0u8; 32]).is_err());
     }
 }
