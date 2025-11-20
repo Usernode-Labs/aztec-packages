@@ -67,6 +67,7 @@ fn target_triple() -> String {
         match t.as_str() {
             "x86_64-unknown-linux-gnu"
             | "aarch64-unknown-linux-gnu"
+            | "x86_64-linux-android"
             | "aarch64-apple-darwin"
             | "aarch64-apple-ios-sim"
             | "aarch64-apple-ios"
@@ -81,6 +82,7 @@ fn target_triple() -> String {
         ("aarch64", "linux") => "aarch64-unknown-linux-gnu".to_string(),
         ("aarch64", "macos") => "aarch64-apple-darwin".to_string(),
         ("aarch64", "ios") => "aarch64-apple-ios-sim".to_string(),
+        ("x86_64", "android") => "x86_64-linux-android".to_string(),
         ("aarch64", "android") => "aarch64-linux-android".to_string(),
         _ => {
             println!(

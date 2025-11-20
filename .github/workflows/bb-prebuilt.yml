@@ -34,6 +34,9 @@ jobs:
           - runner: ubuntu-22.04
             target: aarch64-linux-android
             os_tag: android-arm64
+          - runner: ubuntu-22.04
+            target: x86_64-linux-android
+            os_tag: android-x64
           - runner: macos-14
             target: aarch64-apple-darwin
             os_tag: macos-arm64
@@ -168,8 +171,8 @@ jobs:
             -DBB_ENABLE_BENCH=OFF \
             -DBB_ENABLE_TESTS=OFF
 
-      - name: Install Android NDK (Linux, aarch64)
-        if: runner.os == 'Linux' && matrix.target == 'aarch64-linux-android'
+      - name: Install Android NDK (Linux, Android targets)
+        if: runner.os == 'Linux' && contains(matrix.target, 'linux-android')
         shell: bash
         run: |
           set -euxo pipefail
@@ -181,23 +184,59 @@ jobs:
           unzip -q ${NDK_ZIP} -d $HOME
           rm -f ${NDK_ZIP}
           ndk_dir=$(echo $HOME/android-ndk-*)
+          api=28
+          case "${{ matrix.target }}" in
+            aarch64-linux-android)
+              abi=arm64-v8a
+              bb_arm=ON
+              bb_target_arch=""
+              clang_target="aarch64-linux-android${api}"
+              ;;
+            x86_64-linux-android)
+              abi=x86_64
+              bb_arm=""
+              bb_target_arch="x86-64"
+              clang_target="x86_64-linux-android${api}"
+              ;;
+            *)
+              echo "Unsupported Android target ${{ matrix.target }}" >&2
+              exit 1
+              ;;
+          esac
           echo "ANDROID_NDK=$ndk_dir" >> $GITHUB_ENV
+          echo "ANDROID_ABI=$abi" >> $GITHUB_ENV
+          echo "ANDROID_API=$api" >> $GITHUB_ENV
+          echo "ANDROID_CLANG_TARGET=$clang_target" >> $GITHUB_ENV
+          if [ -n "$bb_target_arch" ]; then
+            echo "BB_TARGET_ARCH=$bb_target_arch" >> $GITHUB_ENV
+          fi
+          if [ -n "$bb_arm" ]; then
+            echo "BB_ARM=$bb_arm" >> $GITHUB_ENV
+          fi
           echo "CC=$ndk_dir/toolchains/llvm/prebuilt/linux-x86_64/bin/clang" >> $GITHUB_ENV
           echo "CXX=$ndk_dir/toolchains/llvm/prebuilt/linux-x86_64/bin/clang++" >> $GITHUB_ENV
 
-      - name: Configure (CMake + Ninja, Android aarch64)
-        if: runner.os == 'Linux' && matrix.target == 'aarch64-linux-android'
+      - name: Configure (CMake + Ninja, Android)
+        if: runner.os == 'Linux' && contains(matrix.target, 'linux-android')
         run: |
+          target_arch_arg=""
+          arm_arg=""
+          if [ -n "${BB_TARGET_ARCH:-}" ]; then
+            target_arch_arg="-DTARGET_ARCH=${BB_TARGET_ARCH}"
+          fi
+          if [ -n "${BB_ARM:-}" ]; then
+            arm_arg="-DARM=${BB_ARM}"
+          fi
           cmake -S barretenberg/cpp -B build \
             -DCMAKE_BUILD_TYPE=RelWithDebInfo \
             -GNinja \
             -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
             -DCMAKE_SYSTEM_NAME=Android \
-            -DCMAKE_TOOLCHAIN_FILE=${{ env.ANDROID_NDK }}/build/cmake/android.toolchain.cmake \
-            -DCMAKE_ANDROID_NDK=${{ env.ANDROID_NDK }} \
-            -DANDROID_ABI=arm64-v8a \
-            -DANDROID_PLATFORM=28 \
-            -DTARGET_ARCH=generic \
+            -DCMAKE_TOOLCHAIN_FILE="${ANDROID_NDK}/build/cmake/android.toolchain.cmake" \
+            -DANDROID_ABI="${ANDROID_ABI}" \
+            -DANDROID_PLATFORM="${ANDROID_API}" \
+            ${target_arch_arg} \
+            ${arm_arg} \
             -DDISABLE_AZTEC_VM=ON \
             -DENABLE_TRACY=OFF \
             -DBB_BUILD_TRANSLATOR_VM=ON \
@@ -617,11 +656,17 @@ jobs:
           cargo build --target aarch64-unknown-linux-gnu -p aztec-barretenberg-rs
 
   consumer-test-android:
-    name: Consumer test (Android aarch64)
+    name: Consumer test (Android ${{ matrix.target }})
     needs: build
     runs-on: ubuntu-22.04
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - aarch64-linux-android
+          - x86_64-linux-android
     env:
-      TARGET: aarch64-linux-android
+      TARGET: ${{ matrix.target }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -645,7 +690,7 @@ jobs:
           set -eux
           curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain stable
           echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
-          rustup target add aarch64-linux-android
+          rustup target add ${TARGET}
 
       - name: Install Android NDK
         run: |
@@ -657,6 +702,7 @@ jobs:
           rm -f ${NDK_ZIP}
           ndk_dir=$(echo $HOME/android-ndk-*)
           echo "ANDROID_NDK=$ndk_dir" >> $GITHUB_ENV
+          echo "ANDROID_API=28" >> $GITHUB_ENV
 
       - name: Download build artifacts
         uses: actions/download-artifact@v4
@@ -682,14 +728,35 @@ jobs:
         env:
           BB_USE_PREBUILT: "1"
           BB_PREBUILT_VERSION: ${{ env.VERSION_TAG }}
-          CC_aarch64_linux_android: ${{ env.ANDROID_NDK }}/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android28-clang
-          CXX_aarch64_linux_android: ${{ env.ANDROID_NDK }}/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android28-clang++
-          AR_aarch64_linux_android: ${{ env.ANDROID_NDK }}/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ar
-          RANLIB_aarch64_linux_android: ${{ env.ANDROID_NDK }}/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ranlib
-          CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER: ${{ env.ANDROID_NDK }}/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android28-clang
-          PKG_CONFIG_ALLOW_CROSS: "1"
         run: |
-          cargo build --target aarch64-linux-android -p aztec-barretenberg-rs
+          set -euxo pipefail
+          target="${TARGET}"
+          ndk="${ANDROID_NDK}"
+          api="${ANDROID_API:-28}"
+          toolchain="${ndk}/toolchains/llvm/prebuilt/linux-x86_64/bin"
+          case "$target" in
+            aarch64-linux-android)
+              clang_target="aarch64-linux-android${api}"
+              ;;
+            x86_64-linux-android)
+              clang_target="x86_64-linux-android${api}"
+              ;;
+            *)
+              echo "Unsupported Android target $target" >&2
+              exit 1
+              ;;
+          esac
+          env_suffix=${target//-/_}
+          env_upper=$(echo "$env_suffix" | tr '[:lower:]' '[:upper:]')
+          export CC_${env_suffix}="${toolchain}/${clang_target}-clang"
+          export CXX_${env_suffix}="${toolchain}/${clang_target}-clang++"
+          export AR_${env_suffix}="${toolchain}/llvm-ar"
+          export RANLIB_${env_suffix}="${toolchain}/llvm-ranlib"
+          export CARGO_TARGET_${env_upper}_LINKER="${toolchain}/${clang_target}-clang"
+          export CARGO_TARGET_${env_upper}_AR="${toolchain}/llvm-ar"
+          export CARGO_TARGET_${env_upper}_RANLIB="${toolchain}/llvm-ranlib"
+          export PKG_CONFIG_ALLOW_CROSS=1
+          cargo build --target "$target" -p aztec-barretenberg-rs
 
   consumer-test-macos:
     name: Consumer test (macOS aarch64)
@@ -1054,10 +1121,18 @@ jobs:
           cargo build -p aztec-barretenberg-rs
 
   download-test-android-after-release:
-    name: Download test (Android aarch64, after release)
+    name: Download test (Android ${{ matrix.target }}, after release)
     needs: release
     if: ${{ needs.release.result == 'success' }}
     runs-on: ubuntu-22.04
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - aarch64-linux-android
+          - x86_64-linux-android
+    env:
+      TARGET: ${{ matrix.target }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -1077,7 +1152,7 @@ jobs:
           set -eux
           curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain stable
           echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
-          rustup target add aarch64-linux-android
+          rustup target add ${TARGET}
 
       - name: Install Android NDK
         run: |
@@ -1089,16 +1164,38 @@ jobs:
           rm -f ${NDK_ZIP}
           ndk_dir=$(echo $HOME/android-ndk-*)
           echo "ANDROID_NDK=$ndk_dir" >> $GITHUB_ENV
+          echo "ANDROID_API=28" >> $GITHUB_ENV
 
       - name: Build Rust crate (download from Releases)
         env:
           BB_USE_PREBUILT: "1"
-          CC_aarch64_linux_android: ${{ env.ANDROID_NDK }}/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android28-clang
-          CXX_aarch64_linux_android: ${{ env.ANDROID_NDK }}/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android28-clang++
-          AR_aarch64_linux_android: ${{ env.ANDROID_NDK }}/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ar
-          RANLIB_aarch64_linux_android: ${{ env.ANDROID_NDK }}/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ranlib
-          CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER: ${{ env.ANDROID_NDK }}/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android28-clang
-          PKG_CONFIG_ALLOW_CROSS: "1"
         run: |
-          cargo build --target aarch64-linux-android -p aztec-barretenberg-rs
+          set -euxo pipefail
+          target="${TARGET}"
+          ndk="${ANDROID_NDK}"
+          api="${ANDROID_API:-28}"
+          toolchain="${ndk}/toolchains/llvm/prebuilt/linux-x86_64/bin"
+          case "$target" in
+            aarch64-linux-android)
+              clang_target="aarch64-linux-android${api}"
+              ;;
+            x86_64-linux-android)
+              clang_target="x86_64-linux-android${api}"
+              ;;
+            *)
+              echo "Unsupported Android target $target" >&2
+              exit 1
+              ;;
+          esac
+          env_suffix=${target//-/_}
+          env_upper=$(echo "$env_suffix" | tr '[:lower:]' '[:upper:]')
+          export CC_${env_suffix}="${toolchain}/${clang_target}-clang"
+          export CXX_${env_suffix}="${toolchain}/${clang_target}-clang++"
+          export AR_${env_suffix}="${toolchain}/llvm-ar"
+          export RANLIB_${env_suffix}="${toolchain}/llvm-ranlib"
+          export CARGO_TARGET_${env_upper}_LINKER="${toolchain}/${clang_target}-clang"
+          export CARGO_TARGET_${env_upper}_AR="${toolchain}/llvm-ar"
+          export CARGO_TARGET_${env_upper}_RANLIB="${toolchain}/llvm-ranlib"
+          export PKG_CONFIG_ALLOW_CROSS=1
+          cargo build --target "$target" -p aztec-barretenberg-rs
       
