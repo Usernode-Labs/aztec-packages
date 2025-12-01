@@ -208,6 +208,7 @@ fn fetch_prebuilt(version_tag: &str, target: &str) -> io::Result<Prebuilt> {
             include: inc_dir,
             include_deps_msgpack: cache_root.join("include-deps/msgpack"),
             include_deps_tracy: cache_root.join("include-deps/tracy"),
+            crs: cache_root.join(".bb-crs"),
         });
     }
 

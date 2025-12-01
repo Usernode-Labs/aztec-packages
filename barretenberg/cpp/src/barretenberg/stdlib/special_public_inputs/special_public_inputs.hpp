@@ -98,7 +98,6 @@ class KernelIO {
      */
     void set_public()
     {
-        fprintf(stderr, "[bb][IO][KernelIO] set_public() begin\n");
         pairing_inputs.set_public();
         kernel_return_data.set_public();
         app_return_data.set_public();
@@ -109,7 +108,6 @@ class KernelIO {
 
         // Finalize the public inputs to ensure no more public inputs can be added hereafter.
         Builder* builder = pairing_inputs.P0.get_context();
-        fprintf(stderr, "[bb][IO][KernelIO] finalize_public_inputs()\n");
         builder->finalize_public_inputs();
     }
 
@@ -169,12 +167,10 @@ template <typename Builder_> class DefaultIO {
      */
     void set_public()
     {
-        fprintf(stderr, "[bb][IO][DefaultIO] set_public() begin\n");
         pairing_inputs.set_public();
 
         // Finalize the public inputs to ensure no more public inputs can be added hereafter.
         Builder* builder = pairing_inputs.P0.get_context();
-        fprintf(stderr, "[bb][IO][DefaultIO] finalize_public_inputs()\n");
         builder->finalize_public_inputs();
     }
 
@@ -232,7 +228,6 @@ template <typename Builder_> class BindingBlockIO {
 
     void set_public()
     {
-        fprintf(stderr, "[bb][IO][BindingBlockIO] set_public() begin\n");
         parent.set_public();
         pl_hash.set_public();
         vkA_hash.set_public();
@@ -242,7 +237,6 @@ template <typename Builder_> class BindingBlockIO {
         right_combiner.set_public();
         // Finalize the inner public inputs boundary so subsequent DefaultIO lands after.
         Builder* builder = parent.get_context();
-        fprintf(stderr, "[bb][IO][BindingBlockIO] finalize_public_inputs()\n");
         builder->finalize_public_inputs();
     }
 };
@@ -286,13 +280,11 @@ template <typename Builder_> class GoblinAvmIO {
      */
     void set_public()
     {
-        fprintf(stderr, "[bb][IO][GoblinAvmIO] set_public() begin\n");
         mega_hash.set_public();
         pairing_inputs.set_public();
 
         // Finalize the public inputs to ensure no more public inputs can be added hereafter.
         Builder* builder = pairing_inputs.P0.get_context();
-        fprintf(stderr, "[bb][IO][GoblinAvmIO] finalize_public_inputs()\n");
         builder->finalize_public_inputs();
     }
 };
@@ -341,7 +333,6 @@ template <class Builder_> class HidingKernelIO {
      */
     void set_public()
     {
-        fprintf(stderr, "[bb][IO][HidingKernelIO] set_public() begin\n");
         pairing_inputs.set_public();
         for (auto& commitment : ecc_op_tables) {
             commitment.set_public();
@@ -349,7 +340,6 @@ template <class Builder_> class HidingKernelIO {
 
         // Finalize the public inputs to ensure no more public inputs can be added hereafter.
         Builder* builder = pairing_inputs.P0.get_context();
-        fprintf(stderr, "[bb][IO][HidingKernelIO] finalize_public_inputs()\n");
         builder->finalize_public_inputs();
     }
 
@@ -416,13 +406,11 @@ class RollupIO {
      */
     void set_public()
     {
-        fprintf(stderr, "[bb][IO][RollupIO] set_public() begin\n");
         pairing_inputs.set_public();
         ipa_claim.set_public();
 
         // Finalize the public inputs to ensure no more public inputs can be added hereafter.
         Builder* builder = pairing_inputs.P0.get_context();
-        fprintf(stderr, "[bb][IO][RollupIO] finalize_public_inputs()\n");
         builder->finalize_public_inputs();
     }
 
