@@ -4,6 +4,10 @@ use std::io::{self};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
+const EXPECTED_BN254_G1: u64 = 67_108_928; // bytes, 2^20 + 1 points
+const EXPECTED_BN254_G2: u64 = 128;
+const EXPECTED_GRUMPKIN_G1: u64 = 16_777_216; // bytes, 2^18 points
+
 fn cmd_exists(name: &str) -> bool {
     Command::new(name)
         .stdout(Stdio::null())
@@ -22,8 +26,10 @@ fn run(mut cmd: Command) {
 fn repo_root() -> PathBuf {
     // crates/aztec-barretenberg-sys-rs -> crates -> repo root
     PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap())
-        .parent().unwrap()
-        .parent().unwrap()
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap()
         .to_path_buf()
 }
 
@@ -33,7 +39,11 @@ fn bb_cpp_dir() -> PathBuf {
 
 fn default_build_dir(repo_root: &Path) -> PathBuf {
     let mac = repo_root.join("barretenberg/cpp/build-macos");
-    if mac.exists() { mac } else { repo_root.join("barretenberg/cpp/build") }
+    if mac.exists() {
+        mac
+    } else {
+        repo_root.join("barretenberg/cpp/build")
+    }
 }
 
 fn build_dir_for_compilers(repo_root: &Path, cc: Option<&str>, cxx: Option<&str>) -> PathBuf {
@@ -44,7 +54,10 @@ fn build_dir_for_compilers(repo_root: &Path, cc: Option<&str>, cxx: Option<&str>
 
     // Derive a deterministic build directory name based on the selected compilers
     fn slug(p: &str) -> String {
-        let name = Path::new(p).file_name().and_then(|s| s.to_str()).unwrap_or(p);
+        let name = Path::new(p)
+            .file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or(p);
         name.chars()
             .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
             .collect()
@@ -100,7 +113,9 @@ fn crate_version_tag() -> String {
 }
 
 fn ensure_parent_dir(path: &Path) -> io::Result<()> {
-    if let Some(dir) = path.parent() { fs::create_dir_all(dir)?; }
+    if let Some(dir) = path.parent() {
+        fs::create_dir_all(dir)?;
+    }
     Ok(())
 }
 
@@ -113,24 +128,28 @@ fn download_with(cmd: &str, url: &str, dest: &Path) -> io::Result<bool> {
             .arg("-o")
             .arg(dest)
             .status(),
-        "wget" => Command::new("wget")
-            .arg("-qO")
-            .arg(dest)
-            .arg(url)
-            .status(),
+        "wget" => Command::new("wget").arg("-qO").arg(dest).arg(url).status(),
         _ => return Ok(false),
-    }.map_err(|e| io::Error::new(io::ErrorKind::Other, format!("spawn {}: {}", cmd, e)))?;
+    }
+    .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("spawn {}: {}", cmd, e)))?;
     Ok(status.success())
 }
 
 fn download(url: &str, dest: &Path) -> io::Result<()> {
     if cmd_exists("curl") {
-        if download_with("curl", url, dest)? { return Ok(()); }
+        if download_with("curl", url, dest)? {
+            return Ok(());
+        }
     }
     if cmd_exists("wget") {
-        if download_with("wget", url, dest)? { return Ok(()); }
+        if download_with("wget", url, dest)? {
+            return Ok(());
+        }
     }
-    Err(io::Error::new(io::ErrorKind::Other, format!("failed to download {} (need curl or wget)", url)))
+    Err(io::Error::new(
+        io::ErrorKind::Other,
+        format!("failed to download {} (need curl or wget)", url),
+    ))
 }
 
 fn extract_tar_gz(archive: &Path, dest: &Path) -> io::Result<()> {
@@ -143,7 +162,10 @@ fn extract_tar_gz(archive: &Path, dest: &Path) -> io::Result<()> {
         .arg(dest)
         .status()?;
     if !status.success() {
-        return Err(io::Error::new(io::ErrorKind::Other, "tar extraction failed"));
+        return Err(io::Error::new(
+            io::ErrorKind::Other,
+            "tar extraction failed",
+        ));
     }
     Ok(())
 }
@@ -153,16 +175,23 @@ struct Prebuilt {
     include: PathBuf,
     include_deps_msgpack: PathBuf,
     include_deps_tracy: PathBuf,
+    crs: PathBuf,
 }
 
 fn prebuilt_cache_dir() -> PathBuf {
     // Default cache under repo_root/target/bb-prebuilt
-    if let Some(custom) = env::var_os("BB_PREBUILT_CACHE_DIR") { return PathBuf::from(custom); }
+    if let Some(custom) = env::var_os("BB_PREBUILT_CACHE_DIR") {
+        return PathBuf::from(custom);
+    }
     repo_root().join("target/bb-prebuilt")
 }
 
 fn default_base_url() -> String {
-    if let Ok(val) = env::var("BB_PREBUILT_BASE_URL") { if !val.is_empty() { return val; } }
+    if let Ok(val) = env::var("BB_PREBUILT_BASE_URL") {
+        if !val.is_empty() {
+            return val;
+        }
+    }
     "https://github.com/Usernode-Labs/aztec-packages/releases".to_string()
 }
 
@@ -174,7 +203,7 @@ fn fetch_prebuilt(version_tag: &str, target: &str) -> io::Result<Prebuilt> {
     let lib_dir = cache_root.join("lib");
     let inc_dir = cache_root.join("include");
     if lib_dir.join("libbarretenberg.a").exists() {
-        return Ok(Prebuilt{
+        return Ok(Prebuilt {
             lib: lib_dir,
             include: inc_dir,
             include_deps_msgpack: cache_root.join("include-deps/msgpack"),
@@ -194,39 +223,109 @@ fn fetch_prebuilt(version_tag: &str, target: &str) -> io::Result<Prebuilt> {
     // We rely on TLS + release hygiene. Advanced users can pin/verify externally.
 
     extract_tar_gz(&archive_path, &cache_root)?;
-    let pb = Prebuilt{
+    let pb = Prebuilt {
         lib: lib_dir,
         include: inc_dir,
         include_deps_msgpack: cache_root.join("include-deps/msgpack"),
         include_deps_tracy: cache_root.join("include-deps/tracy"),
+        crs: cache_root.join(".bb-crs"),
     };
     if !pb.lib.join("libbarretenberg.a").exists() {
-        return Err(io::Error::new(io::ErrorKind::Other, "prebuilt archive missing lib/libbarretenberg.a"));
+        return Err(io::Error::new(
+            io::ErrorKind::Other,
+            "prebuilt archive missing lib/libbarretenberg.a",
+        ));
+    }
+    if !pb.crs.join("bn254_g1.dat").exists() {
+        return Err(io::Error::new(
+            io::ErrorKind::Other,
+            "prebuilt archive missing .bb-crs/bn254_g1.dat",
+        ));
     }
     Ok(pb)
+}
+
+fn crs_dest_path() -> PathBuf {
+    if let Ok(val) = env::var("CRS_PATH") {
+        if !val.is_empty() {
+            return PathBuf::from(val);
+        }
+    }
+    if let Ok(home) = env::var("HOME") {
+        return PathBuf::from(home).join(".bb-crs");
+    }
+    PathBuf::from(".bb-crs")
+}
+
+fn needs_crs_copy(dest: &Path) -> bool {
+    let g1 = dest.join("bn254_g1.dat");
+    let g2 = dest.join("bn254_g2.dat");
+    let gg1 = dest.join("grumpkin_g1.flat.dat");
+    match (
+        fs::metadata(&g1).map(|m| m.len()).ok(),
+        fs::metadata(&g2).map(|m| m.len()).ok(),
+        fs::metadata(&gg1).map(|m| m.len()).ok(),
+    ) {
+        (Some(a), Some(b), Some(c)) => {
+            a < EXPECTED_BN254_G1 || b < EXPECTED_BN254_G2 || c < EXPECTED_GRUMPKIN_G1
+        }
+        _ => true,
+    }
+}
+
+fn copy_crs(src: &Path, dest: &Path) -> io::Result<()> {
+    fs::create_dir_all(dest)?;
+    for (name, expected) in [
+        ("bn254_g1.dat", EXPECTED_BN254_G1),
+        ("bn254_g2.dat", EXPECTED_BN254_G2),
+        ("grumpkin_g1.flat.dat", EXPECTED_GRUMPKIN_G1),
+    ] {
+        let s = src.join(name);
+        let d = dest.join(name);
+        let md = fs::metadata(&s)?;
+        if md.len() < expected {
+            return Err(io::Error::new(
+                io::ErrorKind::Other,
+                format!("CRS source {} is smaller than expected ({} bytes)", s.display(), md.len()),
+            ));
+        }
+        fs::copy(&s, &d)?;
+    }
+    Ok(())
 }
 
 fn ensure_barretenberg_built(build_dir: &Path) {
     let cpp = bb_cpp_dir();
     if !cpp.exists() {
-        panic!("barretenberg/cpp not found under repo root: {}", cpp.display());
+        panic!(
+            "barretenberg/cpp not found under repo root: {}",
+            cpp.display()
+        );
     }
 
-    println!("cargo:warning=Configuring Barretenberg in {}",
-        build_dir.display());
+    println!(
+        "cargo:warning=Configuring Barretenberg in {}",
+        build_dir.display()
+    );
     let mut cfg = Command::new("cmake");
     cfg.current_dir(&cpp)
-        .arg("-S").arg(".")
-        .arg("-B").arg(build_dir)
+        .arg("-S")
+        .arg(".")
+        .arg("-B")
+        .arg(build_dir)
         .arg("-DCMAKE_BUILD_TYPE=RelWithDebInfo")
         .arg("-DTARGET_ARCH=skylake");
 
     // Honor CC/CXX if set by forwarding to CMake to avoid cached compiler choices
     if let Ok(cc) = env::var("CC") {
-        if !cc.is_empty() { cfg.arg(format!("-DCMAKE_C_COMPILER={}", cc)); }
+        if !cc.is_empty() {
+            cfg.arg(format!("-DCMAKE_C_COMPILER={}", cc));
+        }
     }
     if let Ok(cxx) = env::var("CXX") {
-        if !cxx.is_empty() { cfg.arg(format!("-DCMAKE_CXX_COMPILER={}", cxx)); }
+        if !cxx.is_empty() {
+            cfg.arg(format!("-DCMAKE_CXX_COMPILER={}", cxx));
+        }
     }
 
     if cmd_exists("ninja") {
@@ -234,21 +333,28 @@ fn ensure_barretenberg_built(build_dir: &Path) {
     }
     run(cfg);
 
-    println!("cargo:warning=Building Barretenberg targets (bb, crypto_schnorr)
-  …");
+    println!(
+        "cargo:warning=Building Barretenberg targets (bb, crypto_schnorr)
+  …"
+    );
     let mut build = Command::new("cmake");
-    build.current_dir(&cpp)
-        .arg("--build").arg(build_dir)
-        .arg("--target").arg("bb")
-        .arg("--target").arg("crypto_schnorr");
+    build
+        .current_dir(&cpp)
+        .arg("--build")
+        .arg(build_dir)
+        .arg("--target")
+        .arg("bb")
+        .arg("--target")
+        .arg("crypto_schnorr");
     run(build);
 
     let lib_dir = build_dir.join("lib");
     if !built_lib_present(&lib_dir) {
-        panic!("Barretenberg built, but static libs not found in {}",
-            lib_dir.display());
+        panic!(
+            "Barretenberg built, but static libs not found in {}",
+            lib_dir.display()
+        );
     }
-
 }
 
 fn main() {
@@ -270,37 +376,60 @@ fn main() {
 
     // Resolve build/lib dirs; allow env overrides
     let env_bb_build = env::var_os("BB_BUILD_DIR").map(PathBuf::from);
-    let env_bb_lib   = env::var_os("BB_LIB_DIR").map(PathBuf::from);
+    let env_bb_lib = env::var_os("BB_LIB_DIR").map(PathBuf::from);
 
     let env_cc = env::var("CC").ok();
     let env_cxx = env::var("CXX").ok();
 
     // Resolve prebuilt usage decision
-    let use_prebuilt = env::var("BB_USE_PREBUILT").ok().map(|s| s == "1" || s.eq_ignore_ascii_case("true")).unwrap_or(true);
-    let allow_fallback = env::var("BB_PREBUILT_ALLOW_BUILD_FALLBACK").ok().map(|s| s == "1" || s.eq_ignore_ascii_case("true")).unwrap_or(false);
+    let use_prebuilt = env::var("BB_USE_PREBUILT")
+        .ok()
+        .map(|s| s == "1" || s.eq_ignore_ascii_case("true"))
+        .unwrap_or(true);
+    let allow_fallback = env::var("BB_PREBUILT_ALLOW_BUILD_FALLBACK")
+        .ok()
+        .map(|s| s == "1" || s.eq_ignore_ascii_case("true"))
+        .unwrap_or(false);
 
-    let bb_build_dir = env_bb_build.clone().unwrap_or_else(||
-        build_dir_for_compilers(&repo_root, env_cc.as_deref(), env_cxx.as_deref()));
-    let mut bb_lib_dir   = env_bb_lib.clone().map(|p| p).unwrap_or_else(|| bb_build_dir.join("lib"));
+    let bb_build_dir = env_bb_build.clone().unwrap_or_else(|| {
+        build_dir_for_compilers(&repo_root, env_cc.as_deref(), env_cxx.as_deref())
+    });
+    let mut bb_lib_dir = env_bb_lib
+        .clone()
+        .map(|p| p)
+        .unwrap_or_else(|| bb_build_dir.join("lib"));
 
     // Track include directories for shim
     let mut inc_primary = bb_cpp_dir().join("src");
     let mut inc_msgpack = bb_build_dir.join("_deps/msgpack-c/src/msgpack-c/include");
-    let mut inc_tracy   = bb_build_dir.join("_deps/tracy-src/public");
+    let mut inc_tracy = bb_build_dir.join("_deps/tracy-src/public");
+    let mut used_prebuilt: Option<Prebuilt> = None;
 
     if env_bb_lib.is_some() {
         if !bb_lib_dir.exists() {
-            panic!("BB_LIB_DIR was set to {:?} but it does not exist", bb_lib_dir);
+            panic!(
+                "BB_LIB_DIR was set to {:?} but it does not exist",
+                bb_lib_dir
+            );
         }
-        println!("cargo:warning=Using BB_LIB_DIR={} (no build)", bb_lib_dir.display());
+        println!(
+            "cargo:warning=Using BB_LIB_DIR={} (no build)",
+            bb_lib_dir.display()
+        );
         // If BB_LIB_DIR points to a prebuilt-style tree, prefer adjacent include dirs.
         if let Some(root) = bb_lib_dir.parent() {
             let inc = root.join("include");
             let m = root.join("include-deps/msgpack");
             let t = root.join("include-deps/tracy");
-            if inc.exists() { inc_primary = inc; }
-            if m.exists() { inc_msgpack = m; }
-            if t.exists() { inc_tracy = t; }
+            if inc.exists() {
+                inc_primary = inc;
+            }
+            if m.exists() {
+                inc_msgpack = m;
+            }
+            if t.exists() {
+                inc_tracy = t;
+            }
         }
     } else if use_prebuilt {
         let ver = env::var("BB_PREBUILT_VERSION").unwrap_or_else(|_| crate_version_tag());
@@ -318,11 +447,18 @@ fn main() {
                     inc_primary = pb.include.clone();
                     inc_msgpack = pb.include_deps_msgpack.clone();
                     inc_tracy = pb.include_deps_tracy.clone();
-                    println!("cargo:warning=Using prebuilt Barretenberg {} for {}", ver, triple);
+                    used_prebuilt = Some(pb);
+                    println!(
+                        "cargo:warning=Using prebuilt Barretenberg {} for {}",
+                        ver, triple
+                    );
                 }
                 Err(e) => {
                     if allow_fallback {
-                        println!("cargo:warning=Prebuilt unavailable ({}); falling back to local build", e);
+                        println!(
+                            "cargo:warning=Prebuilt unavailable ({}); falling back to local build",
+                            e
+                        );
                     } else {
                         panic!("Failed to fetch prebuilt ({}). Set BB_PREBUILT_ALLOW_BUILD_FALLBACK=1 to build locally or set BB_LIB_DIR.", e);
                     }
@@ -331,23 +467,54 @@ fn main() {
         }
     }
 
+    // If we used a prebuilt, install the bundled CRS into CRS_PATH (default ~/.bb-crs) when missing/too small.
+    if let Some(pb) = used_prebuilt {
+        let crs_src = pb.crs;
+        if crs_src.exists() {
+            let dest = crs_dest_path();
+            if needs_crs_copy(&dest) {
+                println!(
+                    "cargo:warning=Installing bundled CRS to {}",
+                    dest.display()
+                );
+                if let Err(e) = copy_crs(&crs_src, &dest) {
+                    println!(
+                        "cargo:warning=Failed to install CRS from {} to {}: {}",
+                        crs_src.display(),
+                        dest.display(),
+                        e
+                    );
+                }
+            }
+        }
+    }
+
     // If still no libs present, optionally build locally
     if !built_lib_present(&bb_lib_dir) {
         if allow_fallback {
-            println!("cargo:warning=Barretenberg libs not found at {}; building locally…", bb_lib_dir.display());
+            println!(
+                "cargo:warning=Barretenberg libs not found at {}; building locally…",
+                bb_lib_dir.display()
+            );
             ensure_barretenberg_built(&bb_build_dir);
             bb_lib_dir = bb_build_dir.join("lib");
             inc_primary = bb_cpp_dir().join("src");
             inc_msgpack = bb_build_dir.join("_deps/msgpack-c/src/msgpack-c/include");
-            inc_tracy   = bb_build_dir.join("_deps/tracy-src/public");
+            inc_tracy = bb_build_dir.join("_deps/tracy-src/public");
         } else {
             panic!("Barretenberg libs not available and fallback disabled. Provide prebuilt (BB_USE_PREBUILT=1) or set BB_PREBUILT_ALLOW_BUILD_FALLBACK=1.");
         }
     }
 
     // Rebuild if static archives change (or shim source if we build locally)
-    println!("cargo:rerun-if-changed={}", bb_lib_dir.join("libbarretenberg.a").display());
-    println!("cargo:rerun-if-changed={}", bb_lib_dir.join("libbb_rust_api.a").display());
+    println!(
+        "cargo:rerun-if-changed={}",
+        bb_lib_dir.join("libbarretenberg.a").display()
+    );
+    println!(
+        "cargo:rerun-if-changed={}",
+        bb_lib_dir.join("libbb_rust_api.a").display()
+    );
 
     // Decide whether to use a prebuilt shim or compile the local shim. If the environment
     // variable BB_FORCE_LOCAL_SHIM=1 is set, always compile the local shim to ensure the
@@ -359,11 +526,17 @@ fn main() {
         .unwrap_or(false);
 
     if prebuilt_shim.exists() && !force_local_shim {
-        println!("cargo:warning=Using prebuilt bb_rust_api from {}", prebuilt_shim.display());
+        println!(
+            "cargo:warning=Using prebuilt bb_rust_api from {}",
+            prebuilt_shim.display()
+        );
         println!("cargo:rustc-link-lib=static=bb_rust_api");
     } else {
         if allow_fallback || force_local_shim {
-            println!("cargo:warning=Compiling local C++ shim (force_local_shim={})", force_local_shim);
+            println!(
+                "cargo:warning=Compiling local C++ shim (force_local_shim={})",
+                force_local_shim
+            );
             // Compile shim from a temporary copy to avoid local source-tree header collisions when linking against prebuilt.
             let out_dir = PathBuf::from(env::var("OUT_DIR").unwrap());
             let shim_src = out_dir.join("bb_rust_api.cpp");
@@ -439,5 +612,4 @@ fn main() {
         println!("cargo:rustc-link-lib=dylib=gcc_s");
         println!("cargo:rustc-link-lib=dylib=dl");
     }
-
 }

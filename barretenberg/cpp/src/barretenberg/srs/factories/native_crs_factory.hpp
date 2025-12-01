@@ -4,6 +4,7 @@
 #include "barretenberg/srs/factories/mem_bn254_crs_factory.hpp"
 #include "barretenberg/srs/factories/mem_grumpkin_crs_factory.hpp"
 #include <filesystem>
+#include <cstdlib>
 #include <memory>
 
 namespace bb::srs::factories {
@@ -34,7 +35,11 @@ MemGrumpkinCrsFactory init_grumpkin_crs(const std::filesystem::path& path,
  */
 class NativeBn254CrsFactory : public CrsFactory<curve::BN254> {
   public:
-    NativeBn254CrsFactory(const std::filesystem::path& path, bool allow_download = true)
+    explicit NativeBn254CrsFactory(const std::filesystem::path& path)
+        : NativeBn254CrsFactory(path, env_allows_download())
+    {}
+
+    NativeBn254CrsFactory(const std::filesystem::path& path, bool allow_download)
         : path_(path)
         , allow_download_(allow_download)
     {}
@@ -48,15 +53,25 @@ class NativeBn254CrsFactory : public CrsFactory<curve::BN254> {
     }
 
   private:
+    static bool env_allows_download()
+    {
+        const char* allow = std::getenv("BB_CRS_ALLOW_DOWNLOAD");
+        return allow && allow[0] != '\0' && allow[0] != '0';
+    }
+
     std::filesystem::path path_;
-    bool allow_download_ = true;
+    bool allow_download_ = false;
     size_t last_degree_ = 0;
     std::shared_ptr<MemBn254CrsFactory> mem_crs_;
 };
 
 class NativeGrumpkinCrsFactory : public CrsFactory<curve::Grumpkin> {
   public:
-    NativeGrumpkinCrsFactory(const std::filesystem::path& path, bool allow_download = true)
+    explicit NativeGrumpkinCrsFactory(const std::filesystem::path& path)
+        : NativeGrumpkinCrsFactory(path, env_allows_download())
+    {}
+
+    NativeGrumpkinCrsFactory(const std::filesystem::path& path, bool allow_download)
         : path_(path)
         , allow_download_(allow_download)
     {}
@@ -71,8 +86,14 @@ class NativeGrumpkinCrsFactory : public CrsFactory<curve::Grumpkin> {
     }
 
   private:
+    static bool env_allows_download()
+    {
+        const char* allow = std::getenv("BB_CRS_ALLOW_DOWNLOAD");
+        return allow && allow[0] != '\0' && allow[0] != '0';
+    }
+
     std::filesystem::path path_;
-    bool allow_download_ = true;
+    bool allow_download_ = false;
     size_t last_degree_ = 0;
     std::unique_ptr<MemGrumpkinCrsFactory> mem_crs_;
 };
