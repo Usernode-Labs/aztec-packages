@@ -1,9 +1,9 @@
-use std::path::Path;
-use thiserror::Error;
 use acir::AcirField;
 use acir_field::FieldElement as FE;
+use std::sync::OnceLock;
+use thiserror::Error;
 
-#[derive(Debug, Error)]
+#[derive(Clone, Debug, Error)]
 pub enum BbError {
     #[error("ffi not linked: {0}")]
     FfiUnavailable(&'static str),
@@ -17,41 +17,112 @@ pub struct Vk(pub Vec<u8>);
 pub struct Proof(pub Vec<u8>);
 pub struct Witness(pub Vec<u8>);
 
-pub fn set_crs_path(path: impl AsRef<Path>) -> Result<()> {
-    unsafe {
-        use std::ffi::CString;
-        let c = CString::new(path.as_ref().to_string_lossy().as_bytes()).unwrap();
-        aztec_barretenberg_sys_rs::bb_set_crs_path(c.as_ptr());
-        Ok(())
+fn init_crs_from_bytes(
+    bn254_g1: &[u8],
+    bn254_g1_points: u32,
+    bn254_g2: &[u8],
+    grumpkin_g1: &[u8],
+    grumpkin_points: u32,
+) -> Result<()> {
+    const POINT_SIZE: usize = 64;
+    let expected_g1_bytes = bn254_g1_points as usize * POINT_SIZE;
+    let expected_grumpkin_bytes = grumpkin_points as usize * POINT_SIZE;
+    if bn254_g1.len() != expected_g1_bytes {
+        return Err(BbError::Failure("bn254_g1 length mismatch"));
     }
+    if bn254_g2.len() != 128 {
+        return Err(BbError::Failure("bn254_g2 length mismatch"));
+    }
+    if grumpkin_g1.len() != expected_grumpkin_bytes {
+        return Err(BbError::Failure("grumpkin_g1 length mismatch"));
+    }
+
+    let bn254_points_be = bn254_g1_points.to_be();
+    let grumpkin_points_be = grumpkin_points.to_be();
+    unsafe {
+        aztec_barretenberg_sys_rs::srs_init_srs(
+            bn254_g1.as_ptr(),
+            &bn254_points_be as *const u32,
+            bn254_g2.as_ptr(),
+        );
+        aztec_barretenberg_sys_rs::srs_init_grumpkin_srs(
+            grumpkin_g1.as_ptr(),
+            &grumpkin_points_be as *const u32,
+        );
+    }
+    Ok(())
+}
+
+static CRS_INIT: OnceLock<Result<()>> = OnceLock::new();
+
+pub fn init_embedded_crs() -> Result<()> {
+    CRS_INIT
+        .get_or_init(|| {
+            init_crs_from_bytes(
+                aztec_barretenberg_sys_rs::crs_embedded::BN254_G1,
+                aztec_barretenberg_sys_rs::crs_embedded::BN254_G1_POINTS,
+                aztec_barretenberg_sys_rs::crs_embedded::BN254_G2,
+                aztec_barretenberg_sys_rs::crs_embedded::GRUMPKIN_G1,
+                aztec_barretenberg_sys_rs::crs_embedded::GRUMPKIN_POINTS,
+            )
+        })
+        .clone()
+}
+
+fn ensure_crs() -> Result<()> {
+    init_embedded_crs()
 }
 
 pub fn acir_sizes(_acir: &[u8]) -> Result<(u32, u32)> {
     unsafe {
         let mut total: u32 = 0;
         let mut subgroup: u32 = 0;
-        let rc = aztec_barretenberg_sys_rs::bb_acir_sizes(_acir.as_ptr(), _acir.len(), &mut total, &mut subgroup);
-        if rc == 0 { Ok((total, subgroup)) } else { Err(BbError::Failure("acir_sizes")) }
+        let rc = aztec_barretenberg_sys_rs::bb_acir_sizes(
+            _acir.as_ptr(),
+            _acir.len(),
+            &mut total,
+            &mut subgroup,
+        );
+        if rc == 0 {
+            Ok((total, subgroup))
+        } else {
+            Err(BbError::Failure("acir_sizes"))
+        }
     }
 }
 
 /// Compile a Mega circuit from ACIR and cache the proving/verification keys in-process.
 /// Returns a 32-byte deterministic key ID derived from the VK.
 pub fn compile_mega(_acir: &[u8]) -> Result<[u8; 32]> {
+    ensure_crs()?;
     unsafe {
         let mut out = [0u8; 32];
-        let rc = aztec_barretenberg_sys_rs::bb_acir_compile_mega_honk(_acir.as_ptr(), _acir.len(), out.as_mut_ptr());
-        if rc != 0 { return Err(BbError::Failure("compile_mega")); }
+        let rc = aztec_barretenberg_sys_rs::bb_acir_compile_mega_honk(
+            _acir.as_ptr(),
+            _acir.len(),
+            out.as_mut_ptr(),
+        );
+        if rc != 0 {
+            return Err(BbError::Failure("compile_mega"));
+        }
         Ok(out)
     }
 }
 
 pub fn write_vk_mega_honk(_acir: &[u8]) -> Result<Vk> {
+    ensure_crs()?;
     unsafe {
         let mut out_ptr: *mut u8 = std::ptr::null_mut();
         let mut out_len: usize = 0;
-        let rc = aztec_barretenberg_sys_rs::bb_mh_write_vk(_acir.as_ptr(), _acir.len(), &mut out_ptr, &mut out_len);
-        if rc != 0 { return Err(BbError::Failure("write_vk_mega_honk")); }
+        let rc = aztec_barretenberg_sys_rs::bb_mh_write_vk(
+            _acir.as_ptr(),
+            _acir.len(),
+            &mut out_ptr,
+            &mut out_len,
+        );
+        if rc != 0 {
+            return Err(BbError::Failure("write_vk_mega_honk"));
+        }
         let slice = std::slice::from_raw_parts(out_ptr, out_len);
         let vk = Vk(slice.to_vec());
         aztec_barretenberg_sys_rs::bb_free(out_ptr);
@@ -60,6 +131,7 @@ pub fn write_vk_mega_honk(_acir: &[u8]) -> Result<Vk> {
 }
 
 pub fn prove_mega_honk(_acir: &[u8], _witness: &[u8]) -> Result<(Proof, Vk)> {
+    ensure_crs()?;
     unsafe {
         let mut p_ptr: *mut u8 = std::ptr::null_mut();
         let mut p_len: usize = 0;
@@ -75,7 +147,9 @@ pub fn prove_mega_honk(_acir: &[u8], _witness: &[u8]) -> Result<(Proof, Vk)> {
             &mut v_ptr,
             &mut v_len,
         );
-        if rc != 0 { return Err(BbError::Failure("prove_mega_honk")); }
+        if rc != 0 {
+            return Err(BbError::Failure("prove_mega_honk"));
+        }
         let proof = Proof(std::slice::from_raw_parts(p_ptr, p_len).to_vec());
         let vk = Vk(std::slice::from_raw_parts(v_ptr, v_len).to_vec());
         aztec_barretenberg_sys_rs::bb_free(p_ptr);
@@ -85,25 +159,39 @@ pub fn prove_mega_honk(_acir: &[u8], _witness: &[u8]) -> Result<(Proof, Vk)> {
 }
 
 pub fn verify_mega_honk(_proof: &[u8], _vk: &[u8]) -> Result<bool> {
+    ensure_crs()?;
     unsafe {
         let mut ok = false;
         let rc = aztec_barretenberg_sys_rs::bb_mh_verify(
-            _proof.as_ptr(), _proof.len(), _vk.as_ptr(), _vk.len(), &mut ok,
+            _proof.as_ptr(),
+            _proof.len(),
+            _vk.as_ptr(),
+            _vk.len(),
+            &mut ok,
         );
-        if rc != 0 { return Err(BbError::Failure("verify_mega_honk")); }
+        if rc != 0 {
+            return Err(BbError::Failure("verify_mega_honk"));
+        }
         Ok(ok)
     }
 }
 
 /// Prove using a cached compile-only key identified by key_id.
 pub fn prove_with_id(key_id: &[u8; 32], witness: &[u8]) -> Result<Proof> {
+    ensure_crs()?;
     unsafe {
         let mut p_ptr: *mut u8 = std::ptr::null_mut();
         let mut p_len: usize = 0;
         let rc = aztec_barretenberg_sys_rs::bb_mh_prove_with_id(
-            key_id.as_ptr(), witness.as_ptr(), witness.len(), &mut p_ptr, &mut p_len,
+            key_id.as_ptr(),
+            witness.as_ptr(),
+            witness.len(),
+            &mut p_ptr,
+            &mut p_len,
         );
-        if rc != 0 { return Err(BbError::Failure("prove_with_id")); }
+        if rc != 0 {
+            return Err(BbError::Failure("prove_with_id"));
+        }
         let proof = Proof(std::slice::from_raw_parts(p_ptr, p_len).to_vec());
         aztec_barretenberg_sys_rs::bb_free(p_ptr);
         Ok(proof)
@@ -112,12 +200,18 @@ pub fn prove_with_id(key_id: &[u8; 32], witness: &[u8]) -> Result<Proof> {
 
 /// Verify using a cached VK identified by key_id.
 pub fn verify_with_id(key_id: &[u8; 32], proof: &[u8]) -> Result<bool> {
+    ensure_crs()?;
     unsafe {
         let mut ok = false;
         let rc = aztec_barretenberg_sys_rs::bb_mh_verify_with_id(
-            key_id.as_ptr(), proof.as_ptr(), proof.len(), &mut ok,
+            key_id.as_ptr(),
+            proof.as_ptr(),
+            proof.len(),
+            &mut ok,
         );
-        if rc != 0 { return Err(BbError::Failure("verify_with_id")); }
+        if rc != 0 {
+            return Err(BbError::Failure("verify_with_id"));
+        }
         Ok(ok)
     }
 }
@@ -125,13 +219,21 @@ pub fn verify_with_id(key_id: &[u8; 32], proof: &[u8]) -> Result<bool> {
 /// Return Mega proof public inputs as concatenated 32-byte big-endian field bytes.
 /// The number of public inputs is determined from the provided VK.
 pub fn mega_public_inputs(_proof: &[u8], _vk: &[u8]) -> Result<Vec<u8>> {
+    ensure_crs()?;
     unsafe {
         let mut p_ptr: *mut u8 = std::ptr::null_mut();
         let mut p_len: usize = 0;
         let rc = aztec_barretenberg_sys_rs::bb_mh_public_inputs(
-            _proof.as_ptr(), _proof.len(), _vk.as_ptr(), _vk.len(), &mut p_ptr, &mut p_len,
+            _proof.as_ptr(),
+            _proof.len(),
+            _vk.as_ptr(),
+            _vk.len(),
+            &mut p_ptr,
+            &mut p_len,
         );
-        if rc != 0 { return Err(BbError::Failure("mega_public_inputs")); }
+        if rc != 0 {
+            return Err(BbError::Failure("mega_public_inputs"));
+        }
         let out = std::slice::from_raw_parts(p_ptr, p_len).to_vec();
         aztec_barretenberg_sys_rs::bb_free(p_ptr);
         Ok(out)
@@ -140,36 +242,60 @@ pub fn mega_public_inputs(_proof: &[u8], _vk: &[u8]) -> Result<Vec<u8>> {
 
 /// Compute the Mega VK hash (32-byte big-endian field element) from VK bytes.
 pub fn mega_vk_hash(_vk: &[u8]) -> Result<[u8; 32]> {
+    ensure_crs()?;
     unsafe {
         let mut out = [0u8; 32];
-        let rc = aztec_barretenberg_sys_rs::bb_mh_vk_hash(_vk.as_ptr(), _vk.len(), out.as_mut_ptr());
-        if rc != 0 { return Err(BbError::Failure("mega_vk_hash")); }
+        let rc =
+            aztec_barretenberg_sys_rs::bb_mh_vk_hash(_vk.as_ptr(), _vk.len(), out.as_mut_ptr());
+        if rc != 0 {
+            return Err(BbError::Failure("mega_vk_hash"));
+        }
         Ok(out)
     }
 }
 
 /// Compute Poseidon2 hash (with a domain tag) over the proof fields parsed from bytes.
 pub fn mega_proof_fields_hash(_proof: &[u8], tag: u32) -> Result<[u8; 32]> {
+    ensure_crs()?;
     unsafe {
         let mut out = [0u8; 32];
-        let rc = aztec_barretenberg_sys_rs::bb_mh_proof_fields_hash(_proof.as_ptr(), _proof.len(), tag, out.as_mut_ptr());
-        if rc != 0 { return Err(BbError::Failure("mega_proof_fields_hash")); }
+        let rc = aztec_barretenberg_sys_rs::bb_mh_proof_fields_hash(
+            _proof.as_ptr(),
+            _proof.len(),
+            tag,
+            out.as_mut_ptr(),
+        );
+        if rc != 0 {
+            return Err(BbError::Failure("mega_proof_fields_hash"));
+        }
         Ok(out)
     }
 }
 
 pub fn merge_mega(_pa: &[u8], _vka: &[u8], _pb: &[u8], _vkb: &[u8]) -> Result<(Proof, Vk)> {
+    ensure_crs()?;
     unsafe {
         let mut p_ptr: *mut u8 = std::ptr::null_mut();
         let mut p_len: usize = 0;
         let mut v_ptr: *mut u8 = std::ptr::null_mut();
         let mut v_len: usize = 0;
         let rc = aztec_barretenberg_sys_rs::bb_merge_mega(
-            _pa.as_ptr(), _pa.len(), _vka.as_ptr(), _vka.len(),
-            _pb.as_ptr(), _pb.len(), _vkb.as_ptr(), _vkb.len(),
-            &mut p_ptr, &mut p_len, &mut v_ptr, &mut v_len,
+            _pa.as_ptr(),
+            _pa.len(),
+            _vka.as_ptr(),
+            _vka.len(),
+            _pb.as_ptr(),
+            _pb.len(),
+            _vkb.as_ptr(),
+            _vkb.len(),
+            &mut p_ptr,
+            &mut p_len,
+            &mut v_ptr,
+            &mut v_len,
         );
-        if rc != 0 { return Err(BbError::Failure("merge_mega")); }
+        if rc != 0 {
+            return Err(BbError::Failure("merge_mega"));
+        }
         let proof = Proof(std::slice::from_raw_parts(p_ptr, p_len).to_vec());
         let vk = Vk(std::slice::from_raw_parts(v_ptr, v_len).to_vec());
         aztec_barretenberg_sys_rs::bb_free(p_ptr);
@@ -183,20 +309,29 @@ pub fn merge_mega(_pa: &[u8], _vka: &[u8], _pb: &[u8], _vkb: &[u8]) -> Result<(P
 /// binding data (proof-field hashes and VK hashes). VK allowlisting is enforced
 /// off-circuit via the published VK hashes.
 pub fn batch_merge_h2(pa: &[u8], vka: &[u8], pb: &[u8], vkb: &[u8]) -> Result<(Proof, Vk)> {
+    ensure_crs()?;
     unsafe {
         let mut p_ptr: *mut u8 = std::ptr::null_mut();
         let mut p_len: usize = 0;
         let mut v_ptr: *mut u8 = std::ptr::null_mut();
         let mut v_len: usize = 0;
         let rc = aztec_barretenberg_sys_rs::bb_batch_merge_h2(
-            pa.as_ptr(), pa.len(),
-            vka.as_ptr(), vka.len(),
-            pb.as_ptr(), pb.len(),
-            vkb.as_ptr(), vkb.len(),
-            &mut p_ptr, &mut p_len,
-            &mut v_ptr, &mut v_len,
+            pa.as_ptr(),
+            pa.len(),
+            vka.as_ptr(),
+            vka.len(),
+            pb.as_ptr(),
+            pb.len(),
+            vkb.as_ptr(),
+            vkb.len(),
+            &mut p_ptr,
+            &mut p_len,
+            &mut v_ptr,
+            &mut v_len,
         );
-        if rc != 0 { return Err(BbError::Failure("batch_merge_h2")); }
+        if rc != 0 {
+            return Err(BbError::Failure("batch_merge_h2"));
+        }
         let proof = Proof(std::slice::from_raw_parts(p_ptr, p_len).to_vec());
         let vk = Vk(std::slice::from_raw_parts(v_ptr, v_len).to_vec());
         aztec_barretenberg_sys_rs::bb_free(p_ptr);
@@ -207,19 +342,24 @@ pub fn batch_merge_h2(pa: &[u8], vka: &[u8], pb: &[u8], vkb: &[u8]) -> Result<(P
 
 pub mod acvm_exec {
     use super::{BbError, Result, Witness};
+    use crate::BarretenbergBlackBoxSolver;
+    use crate::FE;
     use acir::circuit::Program;
     use acir::native_types::{WitnessMap, WitnessStack};
     use acvm::blackbox_solver::{BlackBoxFunctionSolver, StubbedBlackBoxSolver};
-    use crate::BarretenbergBlackBoxSolver;
-    use crate::FE;
-    use acvm::pwg::{ACVM, ACVMStatus};
+    use acvm::pwg::{ACVMStatus, ACVM};
     use bincode;
 
     // Very small helper: construct an empty WitnessMap.
-    fn empty_witness() -> WitnessMap<FE> { WitnessMap::new() }
+    fn empty_witness() -> WitnessMap<FE> {
+        WitnessMap::new()
+    }
 
     // Compute witness assignments for the provided ACIR program using default/private-parameter mapping only.
-    pub fn compute_witness(acir_bytes: &[u8], _inputs: &std::collections::HashMap<String, Vec<u8>>) -> Result<Witness> {
+    pub fn compute_witness(
+        acir_bytes: &[u8],
+        _inputs: &std::collections::HashMap<String, Vec<u8>>,
+    ) -> Result<Witness> {
         // Deserialize ACIR program from bytes emitted by Nargo.
         // Accept either gzipped (as in program.json bytecode) or raw bincode bytes.
         let program: Program<FE> = match acir::circuit::Program::deserialize_program(acir_bytes) {
@@ -235,7 +375,11 @@ pub mod acvm_exec {
         // Build initial (possibly empty) witness map. Many fixtures bake inputs.
         let initial_witness = empty_witness();
 
-        fn run<B: BlackBoxFunctionSolver<FE>>(backend: &B, program: &Program<FE>, initial: WitnessMap<FE>) -> Result<WitnessMap<FE>> {
+        fn run<B: BlackBoxFunctionSolver<FE>>(
+            backend: &B,
+            program: &Program<FE>,
+            initial: WitnessMap<FE>,
+        ) -> Result<WitnessMap<FE>> {
             let func = &program.functions[0];
             let mut acvm: ACVM<'_, FE, B> = ACVM::new(
                 backend,
@@ -268,17 +412,23 @@ pub mod acvm_exec {
 
         // Build a WitnessStack and serialize (gzipped), then return the decompressed bytes
         let stack: WitnessStack<FE> = WitnessStack::from(witness_map);
-        let gz = stack.serialize().map_err(|_| BbError::Failure("witness stack serialize"))?;
+        let gz = stack
+            .serialize()
+            .map_err(|_| BbError::Failure("witness stack serialize"))?;
         let mut dec = flate2::read::GzDecoder::new(gz.as_slice());
         let mut out = Vec::new();
         use std::io::Read;
-        dec.read_to_end(&mut out).map_err(|_| BbError::Failure("gunzip witness stack"))?;
+        dec.read_to_end(&mut out)
+            .map_err(|_| BbError::Failure("gunzip witness stack"))?;
         Ok(Witness(out))
     }
 
     // Public API: compute witness from a flat list of field elements, mapped in order to
     // the circuit's private_parameters (sorted by witness index). This avoids any Prover.toml or ABI parsing.
-    pub fn compute_witness_from_private_inputs(acir_bytes: &[u8], private_inputs: &[FE]) -> Result<Witness> {
+    pub fn compute_witness_from_private_inputs(
+        acir_bytes: &[u8],
+        private_inputs: &[FE],
+    ) -> Result<Witness> {
         // Deserialize ACIR program
         let program: Program<FE> = match acir::circuit::Program::deserialize_program(acir_bytes) {
             Ok(p) => p,
@@ -294,7 +444,9 @@ pub mod acvm_exec {
         let mut indices: Vec<u32> = func
             .private_parameters
             .iter()
-            .map(|w| match *w { acir::native_types::Witness(idx) => idx })
+            .map(|w| match *w {
+                acir::native_types::Witness(idx) => idx,
+            })
             .collect();
         indices.sort_unstable();
         if private_inputs.len() > indices.len() {
@@ -326,11 +478,14 @@ pub mod acvm_exec {
         }
         let witness_map = acvm.finalize();
         let stack: WitnessStack<FE> = WitnessStack::from(witness_map);
-        let gz = stack.serialize().map_err(|_| BbError::Failure("witness stack serialize"))?;
+        let gz = stack
+            .serialize()
+            .map_err(|_| BbError::Failure("witness stack serialize"))?;
         let mut dec = flate2::read::GzDecoder::new(gz.as_slice());
         let mut out = Vec::new();
         use std::io::Read;
-        dec.read_to_end(&mut out).map_err(|_| BbError::Failure("gunzip witness stack"))?;
+        dec.read_to_end(&mut out)
+            .map_err(|_| BbError::Failure("gunzip witness stack"))?;
         Ok(Witness(out))
     }
 }
@@ -347,7 +502,9 @@ impl BarretenbergBlackBoxSolver {
 }
 
 impl acvm::blackbox_solver::BlackBoxFunctionSolver<FE> for BarretenbergBlackBoxSolver {
-    fn pedantic_solving(&self) -> bool { true }
+    fn pedantic_solving(&self) -> bool {
+        true
+    }
 
     fn multi_scalar_mul(
         &self,
@@ -355,7 +512,10 @@ impl acvm::blackbox_solver::BlackBoxFunctionSolver<FE> for BarretenbergBlackBoxS
         _scalars_lo: &[FE],
         _scalars_hi: &[FE],
     ) -> std::result::Result<(FE, FE, FE), acvm::BlackBoxResolutionError> {
-        if _points.len() % 3 != 0 || _scalars_lo.len() != _scalars_hi.len() || _points.len() / 3 != _scalars_lo.len() {
+        if _points.len() % 3 != 0
+            || _scalars_lo.len() != _scalars_hi.len()
+            || _points.len() / 3 != _scalars_lo.len()
+        {
             return Err(acvm::BlackBoxResolutionError::Failed(
                 acir::BlackBoxFunc::MultiScalarMul,
                 "length mismatch: points must be triplets and match scalars".into(),
@@ -445,7 +605,11 @@ impl acvm::blackbox_solver::BlackBoxFunctionSolver<FE> for BarretenbergBlackBoxS
             ));
         }
         let inf = FE::zero();
-        Ok((FE::from_be_bytes_reduce(&out_x), FE::from_be_bytes_reduce(&out_y), inf))
+        Ok((
+            FE::from_be_bytes_reduce(&out_x),
+            FE::from_be_bytes_reduce(&out_y),
+            inf,
+        ))
     }
 
     fn poseidon2_permutation(
@@ -468,7 +632,10 @@ impl acvm::blackbox_solver::BlackBoxFunctionSolver<FE> for BarretenbergBlackBoxS
         let mut out_len: usize = 0;
         let rc = unsafe {
             aztec_barretenberg_sys_rs::bb_poseidon2_permutation_bn254(
-                buf.as_ptr(), 4, &mut out_ptr, &mut out_len,
+                buf.as_ptr(),
+                4,
+                &mut out_ptr,
+                &mut out_len,
             )
         };
         if rc != 0 || out_len != 128 {
@@ -493,13 +660,19 @@ impl acvm::blackbox_solver::BlackBoxFunctionSolver<FE> for BarretenbergBlackBoxS
 // usernode/usernode-circuits to simplify the API surface and avoid linker issues on iOS.
 // Only the Blake2s prehash + XY verification flow is retained.
 
-pub fn grumpkin_derive_pubkey(sk32: &[u8; 32]) -> Result<([u8;32],[u8;32])> {
+pub fn grumpkin_derive_pubkey(sk32: &[u8; 32]) -> Result<([u8; 32], [u8; 32])> {
     unsafe {
         let mut x = [0u8; 32];
         let mut y = [0u8; 32];
-        let rc = aztec_barretenberg_sys_rs::bb_grumpkin_derive_pubkey(sk32.as_ptr(), x.as_mut_ptr(), y.as_mut_ptr());
-        if rc != 0 { return Err(BbError::Failure("grumpkin_derive_pubkey")); }
-        Ok((x,y))
+        let rc = aztec_barretenberg_sys_rs::bb_grumpkin_derive_pubkey(
+            sk32.as_ptr(),
+            x.as_mut_ptr(),
+            y.as_mut_ptr(),
+        );
+        if rc != 0 {
+            return Err(BbError::Failure("grumpkin_derive_pubkey"));
+        }
+        Ok((x, y))
     }
 }
 
@@ -536,14 +709,18 @@ pub fn grumpkin_decompress(comp_be: [u8; 32]) -> Result<([u8; 32], [u8; 32])> {
     }
 }
 
-
 pub fn schnorr_blake2s_sign(msg: &[u8], sk32: &[u8; 32]) -> Result<[u8; 64]> {
     unsafe {
         let mut sig = [0u8; 64];
         let rc = aztec_barretenberg_sys_rs::bb_schnorr_blake2s_sign(
-            msg.as_ptr(), msg.len(), sk32.as_ptr(), sig.as_mut_ptr(),
+            msg.as_ptr(),
+            msg.len(),
+            sk32.as_ptr(),
+            sig.as_mut_ptr(),
         );
-        if rc != 0 { return Err(BbError::Failure("schnorr_blake2s_sign")); }
+        if rc != 0 {
+            return Err(BbError::Failure("schnorr_blake2s_sign"));
+        }
         Ok(sig)
     }
 }
@@ -557,20 +734,37 @@ pub fn schnorr_blake2s_verify_xy(
     unsafe {
         let mut ok = false;
         let rc = aztec_barretenberg_sys_rs::bb_schnorr_blake2s_verify_xy(
-            msg.as_ptr(), msg.len(), sig64.as_ptr(), pkx32.as_ptr(), pky32.as_ptr(), &mut ok,
+            msg.as_ptr(),
+            msg.len(),
+            sig64.as_ptr(),
+            pkx32.as_ptr(),
+            pky32.as_ptr(),
+            &mut ok,
         );
-        if rc != 0 { return Err(BbError::Failure("schnorr_blake2s_verify_xy")); }
+        if rc != 0 {
+            return Err(BbError::Failure("schnorr_blake2s_verify_xy"));
+        }
         Ok(ok)
     }
 }
 
 /// Add two Grumpkin points (projective affine), returning (x,y) in 32‑byte BE.
-pub fn grumpkin_ec_add(p1x: [u8; 32], p1y: [u8; 32], p2x: [u8; 32], p2y: [u8; 32]) -> Result<([u8; 32], [u8; 32])> {
+pub fn grumpkin_ec_add(
+    p1x: [u8; 32],
+    p1y: [u8; 32],
+    p2x: [u8; 32],
+    p2y: [u8; 32],
+) -> Result<([u8; 32], [u8; 32])> {
     unsafe {
         let mut x = [0u8; 32];
         let mut y = [0u8; 32];
         let rc = aztec_barretenberg_sys_rs::bb_grumpkin_ec_add(
-            p1x.as_ptr(), p1y.as_ptr(), p2x.as_ptr(), p2y.as_ptr(), x.as_mut_ptr(), y.as_mut_ptr(),
+            p1x.as_ptr(),
+            p1y.as_ptr(),
+            p2x.as_ptr(),
+            p2y.as_ptr(),
+            x.as_mut_ptr(),
+            y.as_mut_ptr(),
         );
         if rc != 0 {
             return Err(BbError::Failure("grumpkin_ec_add"));
@@ -584,7 +778,10 @@ pub fn grumpkin_ec_add(p1x: [u8; 32], p1y: [u8; 32], p2x: [u8; 32], p2y: [u8; 32
 // -----------------------------------------------------------------------------
 /// Compute a Pedersen commitment on the Grumpkin curve over a list of 32-byte
 /// big-endian field elements, under a domain separator. Returns (x,y) in 32‑byte BE.
-pub fn grumpkin_pedersen_commit(inputs_be: &[[u8; 32]], domain: u32) -> Result<([u8; 32], [u8; 32])> {
+pub fn grumpkin_pedersen_commit(
+    inputs_be: &[[u8; 32]],
+    domain: u32,
+) -> Result<([u8; 32], [u8; 32])> {
     unsafe {
         let mut flat: Vec<u8> = Vec::with_capacity(inputs_be.len() * 32);
         for be in inputs_be.iter() {
@@ -615,7 +812,11 @@ pub fn grumpkin_hash_to_curve(field_be: [u8; 32], domain: u32) -> Result<([u8; 3
         let mut x = [0u8; 32];
         let mut y = [0u8; 32];
         let rc = aztec_barretenberg_sys_rs::bb_grumpkin_hash_to_curve(
-            field_be.as_ptr(), 1, domain as u32, x.as_mut_ptr(), y.as_mut_ptr(),
+            field_be.as_ptr(),
+            1,
+            domain as u32,
+            x.as_mut_ptr(),
+            y.as_mut_ptr(),
         );
         if rc != 0 {
             return Err(BbError::Failure("grumpkin_hash_to_curve"));
@@ -626,7 +827,11 @@ pub fn grumpkin_hash_to_curve(field_be: [u8; 32], domain: u32) -> Result<([u8; 3
 
 /// Multiply a Grumpkin point by a scalar, using the MSM backend for a single point.
 /// Inputs and outputs are 32‑byte BE; `inf` is treated as 0 for non‑infinite, 1 for infinite.
-pub fn grumpkin_scalar_mul(point_x: [u8; 32], point_y: [u8; 32], scalar32: [u8; 32]) -> Result<([u8; 32], [u8; 32], u8)> {
+pub fn grumpkin_scalar_mul(
+    point_x: [u8; 32],
+    point_y: [u8; 32],
+    scalar32: [u8; 32],
+) -> Result<([u8; 32], [u8; 32], u8)> {
     unsafe {
         // Split scalar into two 128‑bit limbs (big‑endian), high then low.
         let hi = &scalar32[..16];
@@ -665,7 +870,10 @@ pub fn grumpkin_fr_add_mod(a_be: [u8; 32], b_be: [u8; 32]) -> Result<[u8; 32]> {
         let mut out_ptr: *mut u8 = core::ptr::null_mut();
         let mut out_len: usize = 0;
         let rc = aztec_barretenberg_sys_rs::bb_grumpkin_fr_add(
-            a_be.as_ptr(), b_be.as_ptr(), &mut out_ptr, &mut out_len,
+            a_be.as_ptr(),
+            b_be.as_ptr(),
+            &mut out_ptr,
+            &mut out_len,
         );
         if rc != 0 || out_len != 32 {
             return Err(BbError::Failure("grumpkin_fr_add_mod"));
@@ -684,7 +892,10 @@ pub fn grumpkin_fr_sub_mod(a_be: [u8; 32], b_be: [u8; 32]) -> Result<[u8; 32]> {
         let mut out_ptr: *mut u8 = core::ptr::null_mut();
         let mut out_len: usize = 0;
         let rc = aztec_barretenberg_sys_rs::bb_grumpkin_fr_sub(
-            a_be.as_ptr(), b_be.as_ptr(), &mut out_ptr, &mut out_len,
+            a_be.as_ptr(),
+            b_be.as_ptr(),
+            &mut out_ptr,
+            &mut out_len,
         );
         if rc != 0 || out_len != 32 {
             return Err(BbError::Failure("grumpkin_fr_sub_mod"));
@@ -703,7 +914,10 @@ pub fn grumpkin_fr_mul_mod(a_be: [u8; 32], b_be: [u8; 32]) -> Result<[u8; 32]> {
         let mut out_ptr: *mut u8 = core::ptr::null_mut();
         let mut out_len: usize = 0;
         let rc = aztec_barretenberg_sys_rs::bb_grumpkin_fr_mul(
-            a_be.as_ptr(), b_be.as_ptr(), &mut out_ptr, &mut out_len,
+            a_be.as_ptr(),
+            b_be.as_ptr(),
+            &mut out_ptr,
+            &mut out_len,
         );
         if rc != 0 || out_len != 32 {
             return Err(BbError::Failure("grumpkin_fr_mul_mod"));
@@ -731,7 +945,10 @@ pub fn fr_add_mod(a_be: [u8; 32], b_be: [u8; 32]) -> Result<[u8; 32]> {
         let mut out_ptr: *mut u8 = core::ptr::null_mut();
         let mut out_len: usize = 0;
         let rc = aztec_barretenberg_sys_rs::bb_fr_add(
-            a_be.as_ptr(), b_be.as_ptr(), &mut out_ptr, &mut out_len,
+            a_be.as_ptr(),
+            b_be.as_ptr(),
+            &mut out_ptr,
+            &mut out_len,
         );
         if rc != 0 || out_len != 32 {
             return Err(BbError::Failure("fr_add_mod"));
@@ -750,7 +967,10 @@ pub fn fr_sub_mod(a_be: [u8; 32], b_be: [u8; 32]) -> Result<[u8; 32]> {
         let mut out_ptr: *mut u8 = core::ptr::null_mut();
         let mut out_len: usize = 0;
         let rc = aztec_barretenberg_sys_rs::bb_fr_sub(
-            a_be.as_ptr(), b_be.as_ptr(), &mut out_ptr, &mut out_len,
+            a_be.as_ptr(),
+            b_be.as_ptr(),
+            &mut out_ptr,
+            &mut out_len,
         );
         if rc != 0 || out_len != 32 {
             return Err(BbError::Failure("fr_sub_mod"));
@@ -769,7 +989,10 @@ pub fn fr_mul_mod(a_be: [u8; 32], b_be: [u8; 32]) -> Result<[u8; 32]> {
         let mut out_ptr: *mut u8 = core::ptr::null_mut();
         let mut out_len: usize = 0;
         let rc = aztec_barretenberg_sys_rs::bb_fr_mul(
-            a_be.as_ptr(), b_be.as_ptr(), &mut out_ptr, &mut out_len,
+            a_be.as_ptr(),
+            b_be.as_ptr(),
+            &mut out_ptr,
+            &mut out_len,
         );
         if rc != 0 || out_len != 32 {
             return Err(BbError::Failure("fr_mul_mod"));

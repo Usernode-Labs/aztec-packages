@@ -1,12 +1,15 @@
 use std::env;
 use std::fs;
-use std::io::{self};
+use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
 const EXPECTED_BN254_G1: u64 = 67_108_928; // bytes, 2^20 + 1 points
 const EXPECTED_BN254_G2: u64 = 128;
 const EXPECTED_GRUMPKIN_G1: u64 = 16_777_216; // bytes, 2^18 points
+const BN254_G1_POINTS: u32 = 1_048_577;
+const GRUMPKIN_POINTS: u32 = 262_144;
+const CRS_BASE_URL: &str = "https://crs.aztec.network";
 
 fn cmd_exists(name: &str) -> bool {
     Command::new(name)
@@ -175,7 +178,6 @@ struct Prebuilt {
     include: PathBuf,
     include_deps_msgpack: PathBuf,
     include_deps_tracy: PathBuf,
-    crs: PathBuf,
 }
 
 fn prebuilt_cache_dir() -> PathBuf {
@@ -208,7 +210,6 @@ fn fetch_prebuilt(version_tag: &str, target: &str) -> io::Result<Prebuilt> {
             include: inc_dir,
             include_deps_msgpack: cache_root.join("include-deps/msgpack"),
             include_deps_tracy: cache_root.join("include-deps/tracy"),
-            crs: cache_root.join(".bb-crs"),
         });
     }
 
@@ -229,7 +230,6 @@ fn fetch_prebuilt(version_tag: &str, target: &str) -> io::Result<Prebuilt> {
         include: inc_dir,
         include_deps_msgpack: cache_root.join("include-deps/msgpack"),
         include_deps_tracy: cache_root.join("include-deps/tracy"),
-        crs: cache_root.join(".bb-crs"),
     };
     if !pb.lib.join("libbarretenberg.a").exists() {
         return Err(io::Error::new(
@@ -237,61 +237,96 @@ fn fetch_prebuilt(version_tag: &str, target: &str) -> io::Result<Prebuilt> {
             "prebuilt archive missing lib/libbarretenberg.a",
         ));
     }
-    if !pb.crs.join("bn254_g1.dat").exists() {
-        return Err(io::Error::new(
-            io::ErrorKind::Other,
-            "prebuilt archive missing .bb-crs/bn254_g1.dat",
-        ));
-    }
     Ok(pb)
 }
 
-fn crs_dest_path() -> PathBuf {
-    if let Ok(val) = env::var("CRS_PATH") {
+fn crs_url(path: &str, override_var: &str) -> String {
+    if let Ok(val) = env::var(override_var) {
         if !val.is_empty() {
-            return PathBuf::from(val);
+            return val;
         }
     }
-    if let Ok(home) = env::var("HOME") {
-        return PathBuf::from(home).join(".bb-crs");
-    }
-    PathBuf::from(".bb-crs")
+    format!("{}/{}", CRS_BASE_URL, path)
 }
 
-fn needs_crs_copy(dest: &Path) -> bool {
-    let g1 = dest.join("bn254_g1.dat");
-    let g2 = dest.join("bn254_g2.dat");
-    let gg1 = dest.join("grumpkin_g1.flat.dat");
-    match (
-        fs::metadata(&g1).map(|m| m.len()).ok(),
-        fs::metadata(&g2).map(|m| m.len()).ok(),
-        fs::metadata(&gg1).map(|m| m.len()).ok(),
-    ) {
-        (Some(a), Some(b), Some(c)) => {
-            a < EXPECTED_BN254_G1 || b < EXPECTED_BN254_G2 || c < EXPECTED_GRUMPKIN_G1
+fn download_crs_file(url: &str, dest: &Path, expected_len: u64, range_end: Option<u64>) -> io::Result<()> {
+    ensure_parent_dir(dest)?;
+    if let Ok(md) = fs::metadata(dest) {
+        if md.len() == expected_len {
+            return Ok(());
         }
-        _ => true,
     }
-}
-
-fn copy_crs(src: &Path, dest: &Path) -> io::Result<()> {
-    fs::create_dir_all(dest)?;
-    for (name, expected) in [
-        ("bn254_g1.dat", EXPECTED_BN254_G1),
-        ("bn254_g2.dat", EXPECTED_BN254_G2),
-        ("grumpkin_g1.flat.dat", EXPECTED_GRUMPKIN_G1),
-    ] {
-        let s = src.join(name);
-        let d = dest.join(name);
-        let md = fs::metadata(&s)?;
-        if md.len() < expected {
+    println!("cargo:warning=Downloading CRS from {}", url);
+    if let Some(end) = range_end {
+        // Use curl range to avoid fetching the full gigantic file.
+        let status = Command::new("curl")
+            .arg("-fL")
+            .arg("-r")
+            .arg(format!("0-{}", end))
+            .arg(url)
+            .arg("-o")
+            .arg(dest)
+            .status()
+            .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("spawn curl: {}", e)))?;
+        if !status.success() {
             return Err(io::Error::new(
                 io::ErrorKind::Other,
-                format!("CRS source {} is smaller than expected ({} bytes)", s.display(), md.len()),
+                format!("curl range download failed for {}", url),
             ));
         }
-        fs::copy(&s, &d)?;
+    } else {
+        download(url, dest)?;
     }
+    let len = fs::metadata(dest)?.len();
+    if len != expected_len {
+        return Err(io::Error::new(
+            io::ErrorKind::Other,
+            format!(
+                "CRS download {} had length {} (expected {})",
+                dest.display(),
+                len,
+                expected_len
+            ),
+        ));
+    }
+    Ok(())
+}
+
+fn ensure_crs_downloaded(out_dir: &Path) -> io::Result<()> {
+    let crs_dir = out_dir.join("bb-crs");
+    fs::create_dir_all(&crs_dir)?;
+    let g1_url = crs_url("g1.dat", "BB_CRS_URL_BN254_G1");
+    let g2_url = crs_url("g2.dat", "BB_CRS_URL_BN254_G2");
+    let grumpkin_url = crs_url("grumpkin_g1.dat", "BB_CRS_URL_GRUMPKIN_G1");
+
+    let g1_path = crs_dir.join("bn254_g1.dat");
+    let g2_path = crs_dir.join("bn254_g2.dat");
+    let grumpkin_path = crs_dir.join("grumpkin_g1.flat.dat");
+
+    download_crs_file(&g1_url, &g1_path, EXPECTED_BN254_G1, Some(EXPECTED_BN254_G1 - 1))?;
+    download_crs_file(&g2_url, &g2_path, EXPECTED_BN254_G2, None)?;
+    download_crs_file(&grumpkin_url, &grumpkin_path, EXPECTED_GRUMPKIN_G1, Some(EXPECTED_GRUMPKIN_G1 - 1))?;
+
+    Ok(())
+}
+
+fn emit_embedded_crs_module(out_dir: &Path) -> io::Result<()> {
+    let module = out_dir.join("crs_embedded.rs");
+    let mut f = fs::File::create(&module)?;
+    writeln!(
+        f,
+        "pub const BN254_G1: &[u8] = include_bytes!(concat!(env!(\"OUT_DIR\"), \"/bb-crs/bn254_g1.dat\"));"
+    )?;
+    writeln!(
+        f,
+        "pub const BN254_G2: &[u8] = include_bytes!(concat!(env!(\"OUT_DIR\"), \"/bb-crs/bn254_g2.dat\"));"
+    )?;
+    writeln!(
+        f,
+        "pub const GRUMPKIN_G1: &[u8] = include_bytes!(concat!(env!(\"OUT_DIR\"), \"/bb-crs/grumpkin_g1.flat.dat\"));"
+    )?;
+    writeln!(f, "pub const BN254_G1_POINTS: u32 = {};", BN254_G1_POINTS)?;
+    writeln!(f, "pub const GRUMPKIN_POINTS: u32 = {};", GRUMPKIN_POINTS)?;
     Ok(())
 }
 
@@ -368,12 +403,16 @@ fn main() {
     println!("cargo:rerun-if-env-changed=BB_PREBUILT_ALLOW_BUILD_FALLBACK");
     println!("cargo:rerun-if-env-changed=BB_PREBUILT_CACHE_DIR");
     println!("cargo:rerun-if-env-changed=BB_PREBUILT_SHA256");
+    println!("cargo:rerun-if-env-changed=BB_CRS_URL_BN254_G1");
+    println!("cargo:rerun-if-env-changed=BB_CRS_URL_BN254_G2");
+    println!("cargo:rerun-if-env-changed=BB_CRS_URL_GRUMPKIN_G1");
     println!("cargo:rerun-if-env-changed=CC");
     println!("cargo:rerun-if-env-changed=CXX");
 
     // Basic paths
     let repo_root = repo_root();
     let bb_cpp_src = bb_cpp_dir().join("src");
+    let out_dir = PathBuf::from(env::var("OUT_DIR").expect("OUT_DIR set by cargo"));
 
     // Resolve build/lib dirs; allow env overrides
     let env_bb_build = env::var_os("BB_BUILD_DIR").map(PathBuf::from);
@@ -404,7 +443,6 @@ fn main() {
     let mut inc_primary = bb_cpp_dir().join("src");
     let mut inc_msgpack = bb_build_dir.join("_deps/msgpack-c/src/msgpack-c/include");
     let mut inc_tracy = bb_build_dir.join("_deps/tracy-src/public");
-    let mut used_prebuilt: Option<Prebuilt> = None;
 
     if env_bb_lib.is_some() {
         if !bb_lib_dir.exists() {
@@ -448,7 +486,6 @@ fn main() {
                     inc_primary = pb.include.clone();
                     inc_msgpack = pb.include_deps_msgpack.clone();
                     inc_tracy = pb.include_deps_tracy.clone();
-                    used_prebuilt = Some(pb);
                     println!(
                         "cargo:warning=Using prebuilt Barretenberg {} for {}",
                         ver, triple
@@ -463,28 +500,6 @@ fn main() {
                     } else {
                         panic!("Failed to fetch prebuilt ({}). Set BB_PREBUILT_ALLOW_BUILD_FALLBACK=1 to build locally or set BB_LIB_DIR.", e);
                     }
-                }
-            }
-        }
-    }
-
-    // If we used a prebuilt, install the bundled CRS into CRS_PATH (default ~/.bb-crs) when missing/too small.
-    if let Some(pb) = used_prebuilt {
-        let crs_src = pb.crs;
-        if crs_src.exists() {
-            let dest = crs_dest_path();
-            if needs_crs_copy(&dest) {
-                println!(
-                    "cargo:warning=Installing bundled CRS to {}",
-                    dest.display()
-                );
-                if let Err(e) = copy_crs(&crs_src, &dest) {
-                    println!(
-                        "cargo:warning=Failed to install CRS from {} to {}: {}",
-                        crs_src.display(),
-                        dest.display(),
-                        e
-                    );
                 }
             }
         }
@@ -539,7 +554,6 @@ fn main() {
                 force_local_shim
             );
             // Compile shim from a temporary copy to avoid local source-tree header collisions when linking against prebuilt.
-            let out_dir = PathBuf::from(env::var("OUT_DIR").unwrap());
             let shim_src = out_dir.join("bb_rust_api.cpp");
             let shim_in = bb_cpp_src.join("bb_rust_api.cpp");
             std::fs::copy(&shim_in, &shim_src).expect("copy bb_rust_api.cpp");
@@ -574,6 +588,11 @@ fn main() {
             );
         }
     }
+
+    // Download CRS assets and generate the embedded module consumed via include_bytes!.
+    ensure_crs_downloaded(&out_dir)
+        .expect("failed to download CRS assets for embedded initialization");
+    emit_embedded_crs_module(&out_dir).expect("failed to write embedded CRS module");
 
     // Link against barretenberg and related static libs
     println!("cargo:rustc-link-search=native={}", bb_lib_dir.display());

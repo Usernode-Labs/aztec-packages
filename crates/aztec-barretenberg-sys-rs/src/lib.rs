@@ -6,15 +6,34 @@ use libc::{c_char, c_int, size_t};
 // Low-level FFI to the C++ shim. These symbols will be provided by the
 // future `bb_rust_api` static library built via build.rs + CMake.
 
+pub mod crs_embedded {
+    include!(concat!(env!("OUT_DIR"), "/crs_embedded.rs"));
+}
+
 extern "C" {
     pub fn bb_set_crs_path(path: *const c_char);
+    pub fn srs_init_srs(points_buf: *const u8, num_points_be: *const u32, g2_point_buf: *const u8);
+    pub fn srs_init_grumpkin_srs(points_buf: *const u8, num_points_be: *const u32);
 
-    pub fn bb_acir_sizes(acir: *const u8, acir_len: size_t, out_total: *mut u32, out_subgroup: *mut u32) -> c_int;
+    pub fn bb_acir_sizes(
+        acir: *const u8,
+        acir_len: size_t,
+        out_total: *mut u32,
+        out_subgroup: *mut u32,
+    ) -> c_int;
 
-    pub fn bb_acir_compile_mega_honk(acir: *const u8, acir_len: size_t, out_key_id32: *mut u8) -> c_int;
+    pub fn bb_acir_compile_mega_honk(
+        acir: *const u8,
+        acir_len: size_t,
+        out_key_id32: *mut u8,
+    ) -> c_int;
 
-    pub fn bb_mh_write_vk(acir: *const u8, acir_len: size_t, out_vk: *mut *mut u8, out_vk_len: *mut size_t)
-        -> c_int;
+    pub fn bb_mh_write_vk(
+        acir: *const u8,
+        acir_len: size_t,
+        out_vk: *mut *mut u8,
+        out_vk_len: *mut size_t,
+    ) -> c_int;
 
     pub fn bb_mh_prove(
         acir: *const u8,
@@ -59,11 +78,7 @@ extern "C" {
         out_len: *mut size_t,
     ) -> c_int;
 
-    pub fn bb_mh_vk_hash(
-        vk: *const u8,
-        vk_len: size_t,
-        out_be32: *mut u8,
-    ) -> c_int;
+    pub fn bb_mh_vk_hash(vk: *const u8, vk_len: size_t, out_be32: *mut u8) -> c_int;
 
     pub fn bb_mh_proof_fields_hash(
         proof: *const u8,

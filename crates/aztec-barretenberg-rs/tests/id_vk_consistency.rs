@@ -1,11 +1,7 @@
 use aztec_barretenberg_rs as bb;
-use std::path::PathBuf;
-fn repo_root() -> PathBuf { PathBuf::from(env!("CARGO_MANIFEST_DIR")).parent().unwrap().parent().unwrap().to_path_buf() }
-
 #[test]
 fn key_id_matches_vk_hash_and_is_stable() {
-    let root = repo_root();
-    let _ = bb::set_crs_path(root.join("barretenberg/ts/crs"));
+    bb::init_embedded_crs().expect("init CRS");
     let acir: &[u8] = include_bytes!("fixtures/utxo_merge.acir");
 
     let id1 = bb::compile_mega(acir).expect("compile_mega");

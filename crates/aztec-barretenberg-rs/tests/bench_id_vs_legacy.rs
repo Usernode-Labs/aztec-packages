@@ -5,13 +5,21 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 fn repo_root() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).parent().unwrap().parent().unwrap().to_path_buf()
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .to_path_buf()
 }
 
 fn load_acir_from_program_json(p: &std::path::Path) -> Vec<u8> {
     let s = fs::read_to_string(p).expect("read program.json");
     let v: serde_json::Value = serde_json::from_str(&s).expect("json");
-    let b64 = v.get("bytecode").and_then(|x| x.as_str()).expect("bytecode str");
+    let b64 = v
+        .get("bytecode")
+        .and_then(|x| x.as_str())
+        .expect("bytecode str");
     let gz = base64::engine::general_purpose::STANDARD
         .decode(b64)
         .expect("base64 decode");
@@ -39,7 +47,7 @@ fn bench_new_api_vs_legacy() {
         _ => std::env::remove_var("BB_REFRESH_DEEP_COPY"),
     }
     let root = repo_root();
-    let _ = bb::set_crs_path(root.join("barretenberg/ts/crs"));
+    bb::init_embedded_crs().expect("init CRS");
     let proj = root.join("barretenberg/noir/hash_ecdsa/target");
     let acir = load_acir_from_program_json(&proj.join("program.json"));
     let witness = load_gunzipped(&proj.join("witness.gz"));
@@ -54,7 +62,10 @@ fn bench_new_api_vs_legacy() {
     let mut dur_old = Duration::default();
     let id = bb::compile_mega(&acir).expect("compile");
     let id2 = bb::compile_mega(&acir).expect("compile again");
-    assert_eq!(id2, id, "compile_mega must return the same ID for identical ACIR");
+    assert_eq!(
+        id2, id,
+        "compile_mega must return the same ID for identical ACIR"
+    );
     let n = std::env::var("BB_BENCH_ITERS")
         .ok()
         .and_then(|s| s.parse::<usize>().ok())
@@ -83,7 +94,10 @@ fn bench_new_api_vs_legacy() {
 
     match (run_new, run_old) {
         (true, true) => {
-            eprintln!("new_api total {:?} ({} iters) vs legacy total {:?}", dur_new, n, dur_old);
+            eprintln!(
+                "new_api total {:?} ({} iters) vs legacy total {:?}",
+                dur_new, n, dur_old
+            );
         }
         (true, false) => {
             eprintln!("new_api total {:?} ({} iters)", dur_new, n);

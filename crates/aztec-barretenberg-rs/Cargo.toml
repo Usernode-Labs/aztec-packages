@@ -1,6 +1,6 @@
 [package]
 name = "aztec-barretenberg-rs"
-version = "1.1.9"
+version = "1.1.10"
 edition = "2021"
 license = "MIT"
 description = "Safe Rust API for Barretenberg MegaHonk proving/verification and merge; ACVM execution always on."

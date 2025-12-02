@@ -53,13 +53,6 @@ jobs:
         with:
           submodules: recursive
 
-      - name: Fetch CRS bundle
-        shell: bash
-        run: |
-          set -euxo pipefail
-          ./scripts/fetch_crs_static.sh
-          tar -czf crs.tar.gz -C "$HOME" .bb-crs
-
       - name: Resolve crate version
         shell: bash
         run: |
@@ -448,13 +441,6 @@ jobs:
               exit 1
             fi
           done
-          # Include CRS bundle in the tarball
-          if [ -d "$HOME/.bb-crs" ]; then
-            cp -a "$HOME/.bb-crs" "$staging/"
-          else
-            echo "Missing CRS directory at \$HOME/.bb-crs" >&2
-            exit 1
-          fi
           echo "$version" > "$staging/VERSION"
           asset="barretenberg-${version}-${target}.tar.gz"
           tar -czf "$asset" -C "$staging" .
