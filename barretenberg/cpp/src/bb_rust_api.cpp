@@ -601,8 +601,8 @@ int bb_mh_verify(const uint8_t* proof,
         auto verification_key = std::make_shared<bb::MegaFlavor::VerificationKey>(vk_raw);
         bb::MegaVerifier verifier{ verification_key };
 
-        // Decide IO strategy based on VK public inputs: if exactly 7, this is a merged
-        // proof exposing only the binding block, so use BindingBlockIO to avoid
+        // Decide IO strategy based on VK public inputs: if it matches the binding block size,
+        // this is a merged proof exposing only the binding block, so use BindingBlockIO to avoid
         // expecting DefaultIO pairing points. Otherwise, default to DefaultIO.
         using Builder = bb::MegaCircuitBuilder;
         using DefaultIO = bb::stdlib::recursion::honk::DefaultIO<Builder>;

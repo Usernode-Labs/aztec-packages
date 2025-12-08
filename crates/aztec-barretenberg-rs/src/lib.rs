@@ -305,9 +305,9 @@ pub fn merge_mega(_pa: &[u8], _vka: &[u8], _pb: &[u8], _vkb: &[u8]) -> Result<(P
 }
 
 /// Batch-merge two MegaHonk proofs using a circuit that computes and constrains
-/// `parent = Poseidon2(tag=20, left, right)` as an inner public input and publishes
-/// binding data (proof-field hashes and VK hashes). VK allowlisting is enforced
-/// off-circuit via the published VK hashes.
+/// `parent = Poseidon2(tag=20, left, right, vkA_hash, vkB_hash)` as an inner public input and
+/// publishes binding data (VK hashes + child combiners). VK allowlisting is enforced off-circuit
+/// via the published VK hashes.
 pub fn batch_merge_h2(pa: &[u8], vka: &[u8], pb: &[u8], vkb: &[u8]) -> Result<(Proof, Vk)> {
     ensure_crs()?;
     unsafe {

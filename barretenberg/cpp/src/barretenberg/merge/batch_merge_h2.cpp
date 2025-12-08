@@ -75,57 +75,21 @@ MergeResult merge(const std::vector<uint8_t>& proofA_fields_buf,
     bb::fr left_native = left_leaf.get_value();
     bb::fr right_native = right_leaf.get_value();
 
-    // Compute parent = Poseidon2(BATCH_TAG=20, left_leaf, right_leaf). This is the designated combiner that the
-    // next merge level will read from this circuit's ACIR public inputs (at index 0).
+    // Compute parent = Poseidon2(BATCH_TAG=20, left_leaf, right_leaf, vkA_hash, vkB_hash). This binds the merge
+    // combiner to the child VK hashes in-circuit.
     auto tag = RecFlavor::FF::from_witness(&builder, bb::fr(uint256_t(20))); // domain tag as field
-    auto parent = bb::stdlib::poseidon2<Builder>::hash(builder, std::vector<RecFlavor::FF>{ tag, left_leaf, right_leaf });
+    auto parent = bb::stdlib::poseidon2<Builder>::hash(
+        builder, std::vector<RecFlavor::FF>{ tag, left_leaf, right_leaf, vkA_hash_ff, vkB_hash_ff });
     // Also compute the native parent using crypto Poseidon2 (same as Rust hash_fields)
-    
-
     bb::fr parent_native = bb::crypto::Poseidon2<bb::crypto::Poseidon2Bn254ScalarFieldParams>::hash(
-        std::vector<bb::fr>{ bb::fr(uint256_t(20)), left_native, right_native });
-
-    //
+        std::vector<bb::fr>{ bb::fr(uint256_t(20)), left_native, right_native, vkA_native->hash(), vkB_native->hash() });
     auto parent_expect = RecFlavor::FF::from_witness(&builder, parent_native);
     parent_expect.assert_equal(parent);
-
-    // Also compute in-circuit hashes of child proofs (over their field encodings) to bind to public outputs
-    auto hash_fields = [&](const std::vector<typename RecFlavor::FF>& xs, uint32_t tag_val) {
-        std::vector<typename RecFlavor::FF> pre;
-        pre.reserve(xs.size() + 1);
-        pre.emplace_back(RecFlavor::FF::from_witness(&builder, bb::fr(uint256_t(tag_val))));
-        pre.insert(pre.end(), xs.begin(), xs.end());
-        return bb::stdlib::poseidon2<Builder>::hash(builder, pre);
-    };
-    // Bind each child proof to public outputs by hashing the exact field encoding consumed by recursion.
-    // Domain tag 60 disambiguates proof-field hashes from other Poseidon2 usages.
-    auto proofA_hash = hash_fields(proofA_fields_ff, 60); // PROOF_TAG=60
-    auto proofB_hash = hash_fields(proofB_fields_ff, 60);
-    // Native equivalents for cross-check
-    auto native_hash_from_fields = [&](const std::vector<bb::fr>& xs, uint32_t tag_val) {
-        std::vector<bb::fr> pre;
-        pre.reserve(xs.size() + 1);
-        pre.emplace_back(bb::fr(uint256_t(tag_val)));
-        pre.insert(pre.end(), xs.begin(), xs.end());
-        return bb::crypto::Poseidon2<bb::crypto::Poseidon2Bn254ScalarFieldParams>::hash(pre);
-    };
-    bb::fr pl_native = native_hash_from_fields(proofA_fields, 60);
-    bb::fr pr_native = native_hash_from_fields(proofB_fields, 60);
-    auto pl_native_ff = RecFlavor::FF::from_witness(&builder, pl_native);
-    auto pr_native_ff = RecFlavor::FF::from_witness(&builder, pr_native);
-    proofA_hash.assert_equal(pl_native_ff);
-    proofB_hash.assert_equal(pr_native_ff);
-    //
-
-    // Use the native vk hashes already constructed for recursive verification
-    // (vkA_hash_ff and vkB_hash_ff)
 
     using BindingIO = bb::stdlib::recursion::honk::BindingBlockIO<Builder>;
     BindingIO binding_block;
     binding_block.parent = parent_expect;
-    binding_block.pl_hash = proofA_hash;
     binding_block.vkA_hash = vkA_hash_ff;
-    binding_block.pr_hash = proofB_hash;
     binding_block.vkB_hash = vkB_hash_ff;
     binding_block.left_combiner = left_leaf;
     binding_block.right_combiner = right_leaf;

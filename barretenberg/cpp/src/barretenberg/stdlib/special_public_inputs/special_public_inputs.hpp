@@ -187,8 +187,8 @@ template <typename Builder_> class DefaultIO {
 using AppIO = DefaultIO<MegaCircuitBuilder>; // app IO is always Mega
 
 /**
- * @brief Binding block IO for batch-merge circuits: 7 field elements appended as inner public inputs.
- * Order: [parent, pl_hash, vkA_hash, pr_hash, vkB_hash, left_combiner, right_combiner].
+ * @brief Binding block IO for batch-merge circuits: 5 field elements appended as inner public inputs.
+ * Order: [parent, vkA_hash, vkB_hash, left_combiner, right_combiner].
  */
 template <typename Builder_> class BindingBlockIO {
   public:
@@ -197,27 +197,21 @@ template <typename Builder_> class BindingBlockIO {
     using FF = typename Curve::ScalarField;
 
     FF parent;
-    FF pl_hash;
     FF vkA_hash;
-    FF pr_hash;
     FF vkB_hash;
     FF left_combiner;
     FF right_combiner;
 
     using PublicFF = bb::stdlib::PublicInputComponent<FF>;
 
-    static constexpr size_t PUBLIC_INPUTS_SIZE = 7 * FF::PUBLIC_INPUTS_SIZE;
+    static constexpr size_t PUBLIC_INPUTS_SIZE = 5 * FF::PUBLIC_INPUTS_SIZE;
 
     void reconstruct_from_public(const std::vector<FF>& public_inputs)
     {
         uint32_t index = static_cast<uint32_t>(public_inputs.size() - PUBLIC_INPUTS_SIZE);
         parent = PublicFF::reconstruct(public_inputs, PublicComponentKey{ index });
         index += FF::PUBLIC_INPUTS_SIZE;
-        pl_hash = PublicFF::reconstruct(public_inputs, PublicComponentKey{ index });
-        index += FF::PUBLIC_INPUTS_SIZE;
         vkA_hash = PublicFF::reconstruct(public_inputs, PublicComponentKey{ index });
-        index += FF::PUBLIC_INPUTS_SIZE;
-        pr_hash = PublicFF::reconstruct(public_inputs, PublicComponentKey{ index });
         index += FF::PUBLIC_INPUTS_SIZE;
         vkB_hash = PublicFF::reconstruct(public_inputs, PublicComponentKey{ index });
         index += FF::PUBLIC_INPUTS_SIZE;
@@ -229,9 +223,7 @@ template <typename Builder_> class BindingBlockIO {
     void set_public()
     {
         parent.set_public();
-        pl_hash.set_public();
         vkA_hash.set_public();
-        pr_hash.set_public();
         vkB_hash.set_public();
         left_combiner.set_public();
         right_combiner.set_public();
