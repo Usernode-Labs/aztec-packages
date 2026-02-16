@@ -89,6 +89,7 @@ add_subdirectory(barretenberg/flavor)
 add_subdirectory(barretenberg/goblin)
 add_subdirectory(barretenberg/grumpkin_srs_gen)
 add_subdirectory(barretenberg/lmdblib)
+add_subdirectory(barretenberg/merge)
 add_subdirectory(barretenberg/numeric)
 add_subdirectory(barretenberg/op_queue)
 add_subdirectory(barretenberg/polynomials)
@@ -171,6 +172,7 @@ set(BARRETENBERG_TARGET_OBJECTS
     $<TARGET_OBJECTS:stdlib_poseidon2_objects>
     $<TARGET_OBJECTS:stdlib_primitives_objects>
     $<TARGET_OBJECTS:stdlib_protogalaxy_verifier_objects>
+    $<TARGET_OBJECTS:merge_objects>
     $<TARGET_OBJECTS:stdlib_schnorr_objects>
     $<TARGET_OBJECTS:stdlib_sha256_objects>
     $<TARGET_OBJECTS:stdlib_translator_vm_verifier_objects>
@@ -196,6 +198,16 @@ add_library(
     STATIC
     ${BARRETENBERG_TARGET_OBJECTS}
 )
+
+add_library(
+    bb_rust_api
+    STATIC
+    bb_rust_api.cpp
+)
+target_link_libraries(bb_rust_api PRIVATE barretenberg)
+if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+    target_compile_options(bb_rust_api PRIVATE -Wno-error=deprecated-copy)
+endif()
 
 if(WASM)
     # When building this wasm "executable", we include the wasi module but exclude the env module.
