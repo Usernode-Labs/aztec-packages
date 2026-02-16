@@ -73,6 +73,16 @@ fn build_dir_for_compilers(repo_root: &Path, cc: Option<&str>, cxx: Option<&str>
         .join(format!("build-rs-{}-{}", cc_slug, cxx_slug))
 }
 
+fn infer_llvm_tool_from_compiler(compiler: &str, tool_name: &str) -> Option<String> {
+    let compiler_path = Path::new(compiler);
+    let dir = compiler_path.parent()?;
+    let candidate = dir.join(tool_name);
+    if candidate.exists() {
+        return Some(candidate.to_string_lossy().into_owned());
+    }
+    None
+}
+
 fn built_lib_present(lib_dir: &Path) -> bool {
     lib_dir.join("libbarretenberg.a").exists()
 }
@@ -249,7 +259,12 @@ fn crs_url(path: &str, override_var: &str) -> String {
     format!("{}/{}", CRS_BASE_URL, path)
 }
 
-fn download_crs_file(url: &str, dest: &Path, expected_len: u64, range_end: Option<u64>) -> io::Result<()> {
+fn download_crs_file(
+    url: &str,
+    dest: &Path,
+    expected_len: u64,
+    range_end: Option<u64>,
+) -> io::Result<()> {
     ensure_parent_dir(dest)?;
     if let Ok(md) = fs::metadata(dest) {
         if md.len() == expected_len {
@@ -303,9 +318,19 @@ fn ensure_crs_downloaded(out_dir: &Path) -> io::Result<()> {
     let g2_path = crs_dir.join("bn254_g2.dat");
     let grumpkin_path = crs_dir.join("grumpkin_g1.flat.dat");
 
-    download_crs_file(&g1_url, &g1_path, EXPECTED_BN254_G1, Some(EXPECTED_BN254_G1 - 1))?;
+    download_crs_file(
+        &g1_url,
+        &g1_path,
+        EXPECTED_BN254_G1,
+        Some(EXPECTED_BN254_G1 - 1),
+    )?;
     download_crs_file(&g2_url, &g2_path, EXPECTED_BN254_G2, None)?;
-    download_crs_file(&grumpkin_url, &grumpkin_path, EXPECTED_GRUMPKIN_G1, Some(EXPECTED_GRUMPKIN_G1 - 1))?;
+    download_crs_file(
+        &grumpkin_url,
+        &grumpkin_path,
+        EXPECTED_GRUMPKIN_G1,
+        Some(EXPECTED_GRUMPKIN_G1 - 1),
+    )?;
 
     Ok(())
 }
@@ -363,6 +388,28 @@ fn ensure_barretenberg_built(build_dir: &Path) {
             cfg.arg(format!("-DCMAKE_CXX_COMPILER={}", cxx));
         }
     }
+    if let Ok(ar) = env::var("AR") {
+        if !ar.is_empty() {
+            cfg.arg(format!("-DCMAKE_AR={}", ar));
+        }
+    } else if let Ok(cxx) = env::var("CXX") {
+        if !cxx.is_empty() {
+            if let Some(inferred_ar) = infer_llvm_tool_from_compiler(&cxx, "llvm-ar") {
+                cfg.arg(format!("-DCMAKE_AR={}", inferred_ar));
+            }
+        }
+    }
+    if let Ok(ranlib) = env::var("RANLIB") {
+        if !ranlib.is_empty() {
+            cfg.arg(format!("-DCMAKE_RANLIB={}", ranlib));
+        }
+    } else if let Ok(cxx) = env::var("CXX") {
+        if !cxx.is_empty() {
+            if let Some(inferred_ranlib) = infer_llvm_tool_from_compiler(&cxx, "llvm-ranlib") {
+                cfg.arg(format!("-DCMAKE_RANLIB={}", inferred_ranlib));
+            }
+        }
+    }
 
     if cmd_exists("ninja") {
         cfg.arg("-GNinja");
@@ -370,7 +417,7 @@ fn ensure_barretenberg_built(build_dir: &Path) {
     run(cfg);
 
     println!(
-        "cargo:warning=Building Barretenberg targets (bb, crypto_schnorr)
+        "cargo:warning=Building Barretenberg targets (bb, bb_rust_api, crypto_schnorr)
   …"
     );
     let mut build = Command::new("cmake");
@@ -380,6 +427,8 @@ fn ensure_barretenberg_built(build_dir: &Path) {
         .arg(build_dir)
         .arg("--target")
         .arg("bb")
+        .arg("--target")
+        .arg("bb_rust_api")
         .arg("--target")
         .arg("crypto_schnorr");
     run(build);
@@ -402,6 +451,7 @@ fn main() {
     println!("cargo:rerun-if-env-changed=BB_PREBUILT_BASE_URL");
     println!("cargo:rerun-if-env-changed=BB_PREBUILT_ALLOW_BUILD_FALLBACK");
     println!("cargo:rerun-if-env-changed=BB_PREBUILT_CACHE_DIR");
+    println!("cargo:rerun-if-env-changed=BB_FORCE_LOCAL_SHIM");
     println!("cargo:rerun-if-env-changed=BB_PREBUILT_SHA256");
     println!("cargo:rerun-if-env-changed=BB_CRS_URL_BN254_G1");
     println!("cargo:rerun-if-env-changed=BB_CRS_URL_BN254_G2");
@@ -444,6 +494,7 @@ fn main() {
     let mut inc_msgpack = bb_build_dir.join("_deps/msgpack-c/src/msgpack-c/include");
     let mut inc_tracy = bb_build_dir.join("_deps/tracy-src/public");
 
+    let mut using_downloaded_prebuilt = false;
     if env_bb_lib.is_some() {
         if !bb_lib_dir.exists() {
             panic!(
@@ -486,6 +537,7 @@ fn main() {
                     inc_primary = pb.include.clone();
                     inc_msgpack = pb.include_deps_msgpack.clone();
                     inc_tracy = pb.include_deps_tracy.clone();
+                    using_downloaded_prebuilt = true;
                     println!(
                         "cargo:warning=Using prebuilt Barretenberg {} for {}",
                         ver, triple
@@ -532,20 +584,32 @@ fn main() {
         bb_lib_dir.join("libbb_rust_api.a").display()
     );
 
-    // Decide whether to use a prebuilt shim or compile the local shim. If the environment
-    // variable BB_FORCE_LOCAL_SHIM=1 is set, always compile the local shim to ensure the
-    // latest symbols are available even when a prebuilt shim is present.
-    let prebuilt_shim = bb_lib_dir.join("libbb_rust_api.a");
-    let force_local_shim = env::var("BB_FORCE_LOCAL_SHIM")
+    // Decide whether to use an existing shim archive (from CMake local build or downloaded prebuilt)
+    // or compile a local shim with cc-rs.
+    let shim_archive = bb_lib_dir.join("libbb_rust_api.a");
+    let requested_force_local_shim = env::var("BB_FORCE_LOCAL_SHIM")
         .ok()
         .map(|s| s == "1" || s.eq_ignore_ascii_case("true"))
         .unwrap_or(false);
-
-    if prebuilt_shim.exists() && !force_local_shim {
+    let force_local_shim = requested_force_local_shim && using_downloaded_prebuilt;
+    if requested_force_local_shim && !using_downloaded_prebuilt {
         println!(
-            "cargo:warning=Using prebuilt bb_rust_api from {}",
-            prebuilt_shim.display()
+            "cargo:warning=Ignoring BB_FORCE_LOCAL_SHIM: using CMake-built bb_rust_api for non-prebuilt libs"
         );
+    }
+
+    if shim_archive.exists() && !force_local_shim {
+        if using_downloaded_prebuilt {
+            println!(
+                "cargo:warning=Using downloaded prebuilt bb_rust_api from {}",
+                shim_archive.display()
+            );
+        } else {
+            println!(
+                "cargo:warning=Using local CMake-built bb_rust_api from {}",
+                shim_archive.display()
+            );
+        }
         println!("cargo:rustc-link-lib=static=bb_rust_api");
     } else {
         if allow_fallback || force_local_shim {

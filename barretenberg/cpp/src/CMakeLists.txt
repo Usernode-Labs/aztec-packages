@@ -100,6 +100,7 @@ add_subdirectory(barretenberg/goblin)
 add_subdirectory(barretenberg/goblin_avm)
 add_subdirectory(barretenberg/grumpkin_srs_gen)
 add_subdirectory(barretenberg/multilinear_batching)
+add_subdirectory(barretenberg/merge)
 add_subdirectory(barretenberg/numeric)
 add_subdirectory(barretenberg/op_queue)
 add_subdirectory(barretenberg/polynomials)
@@ -195,6 +196,7 @@ set(BARRETENBERG_TARGET_OBJECTS
     $<TARGET_OBJECTS:stdlib_keccak_objects>
     $<TARGET_OBJECTS:stdlib_poseidon2_objects>
     $<TARGET_OBJECTS:stdlib_primitives_objects>
+    $<TARGET_OBJECTS:merge_objects>
     $<TARGET_OBJECTS:stdlib_sha256_objects>
     $<TARGET_OBJECTS:stdlib_translator_vm_verifier_objects>
     $<TARGET_OBJECTS:sumcheck_objects>
@@ -218,6 +220,16 @@ add_library(
     STATIC
     ${BARRETENBERG_TARGET_OBJECTS}
 )
+
+add_library(
+    bb_rust_api
+    STATIC
+    bb_rust_api.cpp
+)
+target_link_libraries(bb_rust_api PRIVATE barretenberg)
+if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+    target_compile_options(bb_rust_api PRIVATE -Wno-error=deprecated-copy)
+endif()
 
 # bb-external: static library for external consumers (e.g. barretenberg-rs).
 # Uses the core object list without lmdb/world_state — FFI consumers only need bbapi().

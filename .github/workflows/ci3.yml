@@ -93,6 +93,12 @@ jobs:
           mapfile -t LABELS < <(echo "$PR_LABELS_JSON" | jq -r '.[]')
           ./.github/ci3_labels_to_env.sh "${LABELS[@]}"
 
+      - name: BB prebuilts (Rust) env
+        run: |
+          echo "BB_USE_PREBUILT=1" >> $GITHUB_ENV
+          crate_version=$(sed -n 's/^version\s*=\s*"\(.*\)"/\1/p' crates/aztec-barretenberg-sys-rs/Cargo.toml | head -n1)
+          echo "BB_PREBUILT_VERSION=v${crate_version}" >> $GITHUB_ENV
+
       - name: Run
         env:
           CI_USE_SSH: ${{ (vars.CI_USE_SSH == '1' && !contains(github.event.pull_request.labels.*.name, 'ci-ssm')) && '1' || '0' }}
@@ -132,6 +138,8 @@ jobs:
           CI3_INSTANCE_PROFILE_NAME: ${{ secrets.CI3_INSTANCE_PROFILE_NAME }}
           CI3_SECURITY_GROUP_ID: ${{ secrets.CI3_SECURITY_GROUP_ID }}
           AWS_OIDC_ROLE_ARN: ${{ secrets.AWS_OIDC_ROLE_ARN }}
+          BB_USE_PREBUILT: ${{ env.BB_USE_PREBUILT }}
+          BB_PREBUILT_VERSION: ${{ env.BB_PREBUILT_VERSION }}
         # NOTE: $CI_MODE is set in the Determine CI Mode step.
         run: ./.github/ci3.sh $CI_MODE
 

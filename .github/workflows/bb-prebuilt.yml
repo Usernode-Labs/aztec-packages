@@ -1,0 +1,1201 @@
+name: Build & Publish Barretenberg Prebuilts
+
+on:
+  push:
+    tags:
+      - "bb-v*"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Tag or version string to build/publish (e.g., bb-v0.1.0)
+        required: false
+        default: ""
+      publish:
+        description: Publish release assets after building
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build prebuilts (${{ matrix.target }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+            os_tag: linux-x64
+          - runner: ubuntu-22.04
+            target: aarch64-unknown-linux-gnu
+            os_tag: linux-arm64
+          - runner: ubuntu-22.04
+            target: aarch64-linux-android
+            os_tag: android-arm64
+          - runner: ubuntu-22.04
+            target: x86_64-linux-android
+            os_tag: android-x64
+          - runner: macos-14
+            target: aarch64-apple-darwin
+            os_tag: macos-arm64
+          - runner: macos-14
+            target: aarch64-apple-ios-sim
+            os_tag: ios-sim-arm64
+          - runner: macos-14
+            target: aarch64-apple-ios
+            os_tag: ios-arm64
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Resolve crate version
+        shell: bash
+        run: |
+          if [ -n "${{ inputs.version }}" ]; then
+            version_tag='${{ inputs.version }}'
+          elif [[ "${{ startsWith(github.ref, 'refs/tags/') }}" == "true" ]]; then
+            version_tag='${{ github.ref_name }}'
+          else
+            crate_version=$(sed -n 's/^version\s*=\s*"\(.*\)"/\1/p' crates/aztec-barretenberg-sys-rs/Cargo.toml | head -n1)
+            version_tag="bb-v${crate_version}"
+          fi
+          echo "CRATE_VERSION=${version_tag#bb-v}" >> $GITHUB_ENV
+          echo "VERSION_TAG=${version_tag}" >> $GITHUB_ENV
+
+      - name: Install LLVM/Clang 19 (Linux)
+        if: runner.os == 'Linux' && !contains(matrix.target, 'linux-android')
+        run: |
+          set -euxo pipefail
+          sudo apt-get update
+          sudo apt-get install -y wget lsb-release software-properties-common gnupg ca-certificates cmake ninja-build build-essential pkg-config
+          codename=$(lsb_release -sc)
+          echo "Using Ubuntu codename: $codename"
+          curl -fsSL https://apt.llvm.org/llvm-snapshot.gpg.key | gpg --dearmor | sudo tee /usr/share/keyrings/llvm-snapshot.gpg > /dev/null
+          echo "deb [signed-by=/usr/share/keyrings/llvm-snapshot.gpg] http://apt.llvm.org/${codename}/ llvm-toolchain-${codename}-19 main" | sudo tee /etc/apt/sources.list.d/llvm-19.list
+          sudo apt-get update
+          sudo apt-get install -y clang-19 lld-19
+          echo "CC=clang-19" >> $GITHUB_ENV
+          echo "CXX=clang++-19" >> $GITHUB_ENV
+
+      - name: Install aarch64 cross toolchain (Linux, arm64 target)
+        if: runner.os == 'Linux' && contains(matrix.target, 'aarch64') && !contains(matrix.target, 'android')
+        run: |
+          set -euxo pipefail
+          sudo apt-get update
+          sudo apt-get install -y gcc-aarch64-linux-gnu g++-aarch64-linux-gnu binutils-aarch64-linux-gnu libstdc++-12-dev-arm64-cross
+          echo "AR=/usr/bin/aarch64-linux-gnu-ar" >> $GITHUB_ENV
+          echo "RANLIB=/usr/bin/aarch64-linux-gnu-ranlib" >> $GITHUB_ENV
+
+      - name: macOS SDK env
+        if: runner.os == 'macOS' && !contains(matrix.target, 'ios')
+        run: |
+          brew update
+          brew install cmake ninja llvm@19
+          echo "PATH=$(brew --prefix llvm@19)/bin:$PATH" >> $GITHUB_ENV
+          echo "CC=clang" >> $GITHUB_ENV
+          echo "CXX=clang++" >> $GITHUB_ENV
+          echo "SDKROOT=$(xcrun --sdk macosx --show-sdk-path)" >> $GITHUB_ENV
+          echo "MACOSX_DEPLOYMENT_TARGET=13.0" >> $GITHUB_ENV
+
+      - name: iOS simulator SDK env
+        if: runner.os == 'macOS' && contains(matrix.target, 'ios-sim')
+        run: |
+          brew update
+          brew install cmake ninja llvm@19
+          echo "PATH=$(brew --prefix llvm@19)/bin:$PATH" >> $GITHUB_ENV
+          echo "IOS_SIM_SDK=$(xcrun --sdk iphonesimulator --show-sdk-path)" >> $GITHUB_ENV
+          echo "CC=$(brew --prefix llvm@19)/bin/clang" >> $GITHUB_ENV
+          echo "CXX=$(brew --prefix llvm@19)/bin/clang++" >> $GITHUB_ENV
+          echo "CMAKE_OSX_SYSROOT=$(xcrun --sdk iphonesimulator --show-sdk-path)" >> $GITHUB_ENV
+          echo "CMAKE_OSX_ARCHITECTURES=arm64" >> $GITHUB_ENV
+          echo "CMAKE_OSX_DEPLOYMENT_TARGET=13.0" >> $GITHUB_ENV
+
+      - name: iOS device SDK env
+        if: runner.os == 'macOS' && (matrix.target == 'aarch64-apple-ios')
+        run: |
+          brew update
+          brew install cmake ninja llvm@19
+          echo "PATH=$(brew --prefix llvm@19)/bin:$PATH" >> $GITHUB_ENV
+          echo "IOS_SDK=$(xcrun --sdk iphoneos --show-sdk-path)" >> $GITHUB_ENV
+          echo "CC=$(brew --prefix llvm@19)/bin/clang" >> $GITHUB_ENV
+          echo "CXX=$(brew --prefix llvm@19)/bin/clang++" >> $GITHUB_ENV
+          echo "CMAKE_OSX_SYSROOT=$(xcrun --sdk iphoneos --show-sdk-path)" >> $GITHUB_ENV
+          echo "CMAKE_OSX_ARCHITECTURES=arm64" >> $GITHUB_ENV
+          echo "CMAKE_OSX_DEPLOYMENT_TARGET=13.0" >> $GITHUB_ENV
+
+      - name: Configure (CMake + Ninja, Linux x86_64)
+        if: runner.os == 'Linux' && matrix.target == 'x86_64-unknown-linux-gnu'
+        run: |
+          cmake -S barretenberg/cpp -B build \
+            -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+            -GNinja \
+            -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
+            -DCMAKE_C_COMPILER=${{ env.CC }} \
+            -DCMAKE_CXX_COMPILER=${{ env.CXX }} \
+            -DCMAKE_CXX_FLAGS="-Wno-error=shorten-64-to-32" \
+            -DDISABLE_AZTEC_VM=ON \
+            -DENABLE_TRACY=OFF \
+            -DBB_BUILD_TRANSLATOR_VM=ON \
+            -DBB_ENABLE_BENCH=OFF \
+            -DBB_ENABLE_TESTS=OFF
+
+      - name: Configure (CMake + Ninja, Linux aarch64 cross)
+        if: runner.os == 'Linux' && contains(matrix.target, 'aarch64') && !contains(matrix.target, 'android')
+        run: |
+          cmake -S barretenberg/cpp -B build \
+            -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+            -GNinja \
+            -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
+            -DCMAKE_SYSTEM_NAME=Linux \
+            -DCMAKE_SYSTEM_PROCESSOR=aarch64 \
+            -DTARGET_ARCH=generic \
+            -DCMAKE_C_COMPILER=${{ env.CC }} \
+            -DCMAKE_CXX_COMPILER=${{ env.CXX }} \
+            -DCMAKE_C_COMPILER_TARGET=aarch64-linux-gnu \
+            -DCMAKE_CXX_COMPILER_TARGET=aarch64-linux-gnu \
+            -DCMAKE_AR=${{ env.AR }} \
+            -DCMAKE_RANLIB=${{ env.RANLIB }} \
+            -DCMAKE_C_FLAGS="--target=aarch64-linux-gnu" \
+            -DCMAKE_CXX_FLAGS="--target=aarch64-linux-gnu -Wno-error=shorten-64-to-32" \
+            -DCMAKE_EXE_LINKER_FLAGS="-fuse-ld=lld" \
+            -DCMAKE_SHARED_LINKER_FLAGS="-fuse-ld=lld" \
+            -DCMAKE_TRY_COMPILE_TARGET_TYPE=STATIC_LIBRARY \
+            -DDISABLE_AZTEC_VM=ON \
+            -DENABLE_TRACY=OFF \
+            -DBB_BUILD_TRANSLATOR_VM=ON \
+            -DBB_ENABLE_BENCH=OFF \
+            -DBB_ENABLE_TESTS=OFF
+
+      - name: Install Android NDK (Linux, Android targets)
+        if: runner.os == 'Linux' && contains(matrix.target, 'linux-android')
+        shell: bash
+        run: |
+          set -euxo pipefail
+          sudo apt-get update
+          sudo apt-get install -y cmake ninja-build unzip curl
+          NDK_VERSION=r26d
+          NDK_ZIP=android-ndk-${NDK_VERSION}-linux.zip
+          curl -fsSL https://dl.google.com/android/repository/${NDK_ZIP} -o ${NDK_ZIP}
+          unzip -q ${NDK_ZIP} -d $HOME
+          rm -f ${NDK_ZIP}
+          ndk_dir=$(echo $HOME/android-ndk-*)
+          api=28
+          case "${{ matrix.target }}" in
+            aarch64-linux-android)
+              abi=arm64-v8a
+              bb_arm=ON
+              bb_target_arch=""
+              clang_target="aarch64-linux-android${api}"
+              ;;
+            x86_64-linux-android)
+              abi=x86_64
+              bb_arm=""
+              bb_target_arch="x86-64"
+              clang_target="x86_64-linux-android${api}"
+              ;;
+            *)
+              echo "Unsupported Android target ${{ matrix.target }}" >&2
+              exit 1
+              ;;
+          esac
+          echo "ANDROID_NDK=$ndk_dir" >> $GITHUB_ENV
+          echo "ANDROID_ABI=$abi" >> $GITHUB_ENV
+          echo "ANDROID_API=$api" >> $GITHUB_ENV
+          echo "ANDROID_CLANG_TARGET=$clang_target" >> $GITHUB_ENV
+          if [ -n "$bb_target_arch" ]; then
+            echo "BB_TARGET_ARCH=$bb_target_arch" >> $GITHUB_ENV
+          fi
+          if [ -n "$bb_arm" ]; then
+            echo "BB_ARM=$bb_arm" >> $GITHUB_ENV
+          fi
+          echo "CC=$ndk_dir/toolchains/llvm/prebuilt/linux-x86_64/bin/clang" >> $GITHUB_ENV
+          echo "CXX=$ndk_dir/toolchains/llvm/prebuilt/linux-x86_64/bin/clang++" >> $GITHUB_ENV
+
+      - name: Configure (CMake + Ninja, Android)
+        if: runner.os == 'Linux' && contains(matrix.target, 'linux-android')
+        run: |
+          target_arch_arg=""
+          arm_arg=""
+          if [ -n "${BB_TARGET_ARCH:-}" ]; then
+            target_arch_arg="-DTARGET_ARCH=${BB_TARGET_ARCH}"
+          fi
+          if [ -n "${BB_ARM:-}" ]; then
+            arm_arg="-DARM=${BB_ARM}"
+          fi
+          cmake -S barretenberg/cpp -B build \
+            -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+            -GNinja \
+            -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
+            -DCMAKE_SYSTEM_NAME=Android \
+            -DCMAKE_TOOLCHAIN_FILE="${ANDROID_NDK}/build/cmake/android.toolchain.cmake" \
+            -DANDROID_ABI="${ANDROID_ABI}" \
+            -DANDROID_PLATFORM="${ANDROID_API}" \
+            ${target_arch_arg} \
+            ${arm_arg} \
+            -DDISABLE_AZTEC_VM=ON \
+            -DENABLE_TRACY=OFF \
+            -DBB_BUILD_TRANSLATOR_VM=ON \
+            -DBB_ENABLE_BENCH=OFF \
+            -DBB_ENABLE_TESTS=OFF
+
+      - name: Configure (CMake + Ninja, macOS)
+        if: runner.os == 'macOS' && !contains(matrix.target, 'ios')
+        run: |
+          cmake -S barretenberg/cpp -B build \
+            -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+            -GNinja \
+            -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
+            -DCMAKE_C_COMPILER=${{ env.CC }} \
+            -DCMAKE_CXX_COMPILER=${{ env.CXX }} \
+            -DDISABLE_AZTEC_VM=ON \
+            -DENABLE_TRACY=OFF \
+            -DBB_BUILD_TRANSLATOR_VM=ON \
+            -DBB_ENABLE_BENCH=OFF \
+            -DBB_ENABLE_TESTS=OFF
+
+      - name: Configure (CMake + Ninja, iOS simulator arm64)
+        if: runner.os == 'macOS' && contains(matrix.target, 'ios-sim')
+        run: |
+          # Provide compat header for iOS SDK missing sys/random.h
+          mkdir -p $PWD/build/compat/sys
+          cat > $PWD/build/compat/sys/random.h << 'EOF'
+          #pragma once
+          #include <stddef.h>
+          #include <stdint.h>
+          #include <stdlib.h>
+          #ifdef __cplusplus
+          extern "C" {
+          #endif
+          static inline int getentropy(void* buf, size_t buflen) {
+            arc4random_buf(buf, buflen);
+            return 0;
+          }
+          static inline ssize_t getrandom(void* buf, size_t buflen, unsigned int /*flags*/) {
+            arc4random_buf(buf, buflen);
+            return (ssize_t)buflen;
+          }
+          #ifdef __cplusplus
+          }
+          #endif
+          EOF
+          cmake -S barretenberg/cpp -B build \
+            -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+            -GNinja \
+            -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
+            -DCMAKE_SYSTEM_NAME=iOS \
+            -DCMAKE_OSX_ARCHITECTURES=${{ env.CMAKE_OSX_ARCHITECTURES }} \
+            -DCMAKE_OSX_SYSROOT=${{ env.CMAKE_OSX_SYSROOT }} \
+            -DCMAKE_OSX_DEPLOYMENT_TARGET=${{ env.CMAKE_OSX_DEPLOYMENT_TARGET }} \
+            -DCMAKE_TRY_COMPILE_TARGET_TYPE=STATIC_LIBRARY \
+            -DARM=ON \
+            -DCMAKE_C_COMPILER_TARGET=arm64-apple-ios-simulator \
+            -DCMAKE_CXX_COMPILER_TARGET=arm64-apple-ios-simulator \
+            -DBB_BUILD_NODEJS_MODULE=OFF \
+            -DCMAKE_C_FLAGS="-isystem $PWD/build/compat" \
+            -DCMAKE_CXX_FLAGS="-isystem $PWD/build/compat" \
+            -DCMAKE_C_COMPILER=${{ env.CC }} \
+            -DCMAKE_CXX_COMPILER=${{ env.CXX }} \
+            -DDISABLE_AZTEC_VM=ON \
+            -DENABLE_TRACY=OFF \
+            -DBB_BUILD_TRANSLATOR_VM=ON \
+            -DBB_ENABLE_BENCH=OFF \
+            -DBB_ENABLE_TESTS=OFF
+
+      - name: Configure (CMake + Ninja, iOS device arm64)
+        if: runner.os == 'macOS' && matrix.target == 'aarch64-apple-ios'
+        run: |
+          # Provide compat header for iOS SDK missing sys/random.h
+          mkdir -p $PWD/build/compat/sys
+          cat > $PWD/build/compat/sys/random.h << 'EOF'
+          #pragma once
+          #include <stddef.h>
+          #include <stdint.h>
+          #include <stdlib.h>
+          #ifdef __cplusplus
+          extern "C" {
+          #endif
+          static inline int getentropy(void* buf, size_t buflen) {
+            arc4random_buf(buf, buflen);
+            return 0;
+          }
+          static inline ssize_t getrandom(void* buf, size_t buflen, unsigned int /*flags*/) {
+            arc4random_buf(buf, buflen);
+            return (ssize_t)buflen;
+          }
+          #ifdef __cplusplus
+          }
+          #endif
+          EOF
+          cmake -S barretenberg/cpp -B build \
+            -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+            -GNinja \
+            -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
+            -DCMAKE_SYSTEM_NAME=iOS \
+            -DCMAKE_OSX_ARCHITECTURES=${{ env.CMAKE_OSX_ARCHITECTURES }} \
+            -DCMAKE_OSX_SYSROOT=${{ env.CMAKE_OSX_SYSROOT }} \
+            -DCMAKE_OSX_DEPLOYMENT_TARGET=${{ env.CMAKE_OSX_DEPLOYMENT_TARGET }} \
+            -DCMAKE_TRY_COMPILE_TARGET_TYPE=STATIC_LIBRARY \
+            -DARM=ON \
+            -DCMAKE_C_COMPILER_TARGET=arm64-apple-ios \
+            -DCMAKE_CXX_COMPILER_TARGET=arm64-apple-ios \
+            -DBB_BUILD_NODEJS_MODULE=OFF \
+            -DCMAKE_C_FLAGS="-isystem $PWD/build/compat" \
+            -DCMAKE_CXX_FLAGS="-isystem $PWD/build/compat" \
+            -DCMAKE_C_COMPILER=${{ env.CC }} \
+            -DCMAKE_CXX_COMPILER=${{ env.CXX }} \
+            -DDISABLE_AZTEC_VM=ON \
+            -DENABLE_TRACY=OFF \
+            -DBB_BUILD_TRANSLATOR_VM=OFF \
+            -DBB_ENABLE_BENCH=OFF \
+            -DBB_ENABLE_TESTS=OFF
+
+      - name: Build static libraries (minimal set)
+        run: |
+          cmake --build build --target barretenberg env crypto_schnorr crypto_pedersen_commitment crypto_pedersen_hash crypto_poseidon2 ecc bb_rust_api
+
+      - name: Verify PIC flags (Linux)
+        if: runner.os == 'Linux' && !contains(matrix.target, 'android')
+        shell: bash
+        run: |
+          set -euo pipefail
+          libs=(
+            libbarretenberg.a
+            libenv.a
+            libcrypto_schnorr.a
+            libcrypto_pedersen_commitment.a
+            libcrypto_pedersen_hash.a
+            libcrypto_poseidon2.a
+            libecc.a
+            libbb_rust_api.a
+          )
+          for lib in "${libs[@]}"; do
+            path="build/lib/${lib}"
+            if [ ! -f "$path" ]; then
+              echo "Missing library for PIC verification: $path" >&2
+              exit 1
+            fi
+            if objdump -f "$path" | grep -q "EXEC_P"; then
+              echo "Found EXEC_P flag in $lib" >&2
+              objdump -f "$path" >&2
+              exit 1
+            fi
+            if ! objdump -f "$path" | grep -q "HAS_RELOC"; then
+              echo "Missing HAS_RELOC flag in $lib" >&2
+              objdump -f "$path" >&2
+              exit 1
+            fi
+          done
+
+      - name: Build C++ shim archive (macOS fallback)
+        if: runner.os == 'macOS' && !contains(matrix.target, 'ios')
+        shell: bash
+        run: |
+          set -euxo pipefail
+          # Ensure libbb_rust_api.a exists even if CMake target did not produce it
+          if [ -f build/lib/libbb_rust_api.a ]; then
+            echo "libbb_rust_api.a already present"
+            exit 0
+          fi
+          cxx="${CXX:-clang++}"
+          inc1="barretenberg/cpp/src"
+          inc2="build/_deps/msgpack-c/src/msgpack-c/include"
+          inc3="build/_deps/tracy-src/public"
+          o="build/bb_rust_api.o"
+          "$cxx" -std=c++20 -fPIC -fvisibility=hidden -O2 -Wno-error \
+            -I"$inc1" -I"$inc2" -I"$inc3" \
+            -c barretenberg/cpp/src/bb_rust_api.cpp -o "$o"
+          mkdir -p build/lib
+          libtool -static -o build/lib/libbb_rust_api.a "$o"
+
+      - name: Package prebuilts
+        shell: bash
+        run: |
+          set -euxo pipefail
+          target='${{ matrix.target }}'
+          version='${{ env.VERSION_TAG }}'
+          staging="staging"
+          rm -rf "$staging"
+          mkdir -p "$staging/lib" "$staging/include" "$staging/include-deps/msgpack" "$staging/include-deps/tracy"
+          cp -a barretenberg/cpp/src/. "$staging/include/"
+          cp -a build/_deps/msgpack-c/src/msgpack-c/include/. "$staging/include-deps/msgpack/" || true
+          cp -a build/_deps/tracy-src/public/. "$staging/include-deps/tracy/" || true
+          # Copy only the libs required by the Rust shim (including shim)
+          for lib in \
+            libbb_rust_api.a \
+            libbarretenberg.a \
+            libenv.a \
+            libcrypto_schnorr.a \
+            libcrypto_pedersen_commitment.a \
+            libcrypto_pedersen_hash.a \
+            libcrypto_poseidon2.a \
+            libecc.a; do
+            if [ -f build/lib/$lib ]; then
+              cp -a build/lib/$lib "$staging/lib/"
+            else
+              echo "Missing expected library: $lib" >&2
+              exit 1
+            fi
+          done
+          echo "$version" > "$staging/VERSION"
+          asset="barretenberg-${version}-${target}.tar.gz"
+          tar -czf "$asset" -C "$staging" .
+          # Sanity check: ensure expected files exist inside the tarball (avoid SIGPIPE with pipefail)
+          listfile=$(mktemp -t tarlist.XXXXXX)
+          tar -tzf "$asset" > "$listfile"
+          grep -Eq '^(\./)?lib/libbb_rust_api\.a$' "$listfile" || { echo "ERROR: $asset missing lib/libbb_rust_api.a" >&2; cat "$listfile" >&2; exit 1; }
+          grep -Eq '^(\./)?lib/libbarretenberg\.a$' "$listfile" || { echo "ERROR: $asset missing lib/libbarretenberg.a" >&2; cat "$listfile" >&2; exit 1; }
+          rm -f "$listfile"
+          echo "ASSET=$asset" >> $GITHUB_ENV
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: ${{ env.ASSET }}
+          path: ${{ env.ASSET }}
+          retention-days: 7
+
+      # No separate 'latest' artifact; consumers fetch versioned assets by crate version
+
+      # No SHA256SUMS generation/upload (build.rs does not verify)
+
+  release:
+    name: Publish release assets
+    needs: build
+    runs-on: ubuntu-latest
+    # Run on tag push, or manual run with publish=true
+    if: ${{ (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')) || (github.event_name == 'workflow_dispatch' && inputs.publish) }}
+    steps:
+      - name: Checkout (for tagging)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          submodules: false
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Gather files
+        run: |
+          ls -R artifacts
+          mkdir -p out
+          find artifacts -type f -name 'barretenberg-*.tar.gz' -exec cp {} out/ \;
+          # Verify each tarball has the expected layout before publishing
+          for f in out/*.tar.gz; do
+            echo "Checking $f"
+            listfile=$(mktemp -t tarlist.XXXXXX)
+            tar -tzf "$f" > "$listfile"
+            grep -Eq '^(\./)?lib/libbb_rust_api\.a$' "$listfile" || { echo "ERROR: $f missing lib/libbb_rust_api.a" >&2; cat "$listfile" >&2; exit 1; }
+            grep -Eq '^(\./)?lib/libbarretenberg\.a$' "$listfile" || { echo "ERROR: $f missing lib/libbarretenberg.a" >&2; cat "$listfile" >&2; exit 1; }
+            rm -f "$listfile"
+          done
+
+      - name: Resolve crate version
+        run: |
+          if [ -n "${{ inputs.version }}" ]; then
+            version_tag='${{ inputs.version }}'
+          elif [[ "${{ startsWith(github.ref, 'refs/tags/') }}" == "true" ]]; then
+            version_tag='${{ github.ref_name }}'
+          else
+            crate_version=$(sed -n 's/^version\s*=\s*"\(.*\)"/\1/p' crates/aztec-barretenberg-sys-rs/Cargo.toml | head -n1)
+            version_tag="bb-v${crate_version}"
+          fi
+          echo "CRATE_VERSION=${version_tag#bb-v}" >> $GITHUB_ENV
+          echo "VERSION_TAG=${version_tag}" >> $GITHUB_ENV
+
+      - name: Upload assets (create/update release)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euxo pipefail
+          tag='${{ env.VERSION_TAG }}'
+          # Create release if missing (empty notes/title)
+          gh release view "$tag" >/dev/null 2>&1 || gh release create "$tag" -t "$tag" -n ""
+          # Proactively delete existing assets with same names to avoid stale bytes
+          for f in out/barretenberg-*.tar.gz; do
+            name=$(basename "$f")
+            gh release delete-asset "$tag" "$name" --yes || true
+          done
+          # Upload fresh tarballs
+          gh release upload "$tag" out/barretenberg-*.tar.gz --clobber
+
+
+
+  consumer-test:
+    name: Consumer test (Linux x86_64)
+    needs: build
+    runs-on: ubuntu-22.04
+    env:
+      TARGET: x86_64-unknown-linux-gnu
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Resolve crate version
+        run: |
+          if [ -n "${{ inputs.version }}" ]; then
+            version_tag='${{ inputs.version }}'
+          elif [[ "${{ startsWith(github.ref, 'refs/tags/') }}" == "true" ]]; then
+            version_tag='${{ github.ref_name }}'
+          else
+            crate_version=$(sed -n 's/^version\s*=\s*"\(.*\)"/\1/p' crates/aztec-barretenberg-sys-rs/Cargo.toml | head -n1)
+            version_tag="bb-v${crate_version}"
+          fi
+          echo "VERSION_TAG=${version_tag}" >> $GITHUB_ENV
+
+      - name: Install Rust (stable)
+        run: |
+          set -eux
+          curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain stable
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+
+      # No C++ toolchain needed; linking only
+
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Prepare prebuilt cache
+        run: |
+          set -euxo pipefail
+          asset="barretenberg-${VERSION_TAG}-${TARGET}.tar.gz"
+          found=$(find artifacts -type f -name "$asset" | head -n1 || true)
+          if [ -z "$found" ]; then
+            echo "Artifact $asset not found in artifacts/" >&2
+            ls -R artifacts >&2 || true
+            exit 1
+          fi
+          cache_dir="target/bb-prebuilt/${VERSION_TAG}/${TARGET}"
+          mkdir -p "$cache_dir"
+          tar -xzf "$found" -C "$cache_dir"
+          echo "$VERSION_TAG" > "$cache_dir/VERSION"
+
+      - name: Build Rust crate against prebuilts
+        env:
+          BB_USE_PREBUILT: "1"
+          BB_PREBUILT_VERSION: ${{ env.VERSION_TAG }}
+        run: |
+          cargo build -p aztec-barretenberg-rs
+
+  consumer-test-aarch64:
+    name: Consumer test (Linux aarch64 cross)
+    needs: build
+    runs-on: ubuntu-22.04
+    env:
+      TARGET: aarch64-unknown-linux-gnu
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Resolve crate version
+        run: |
+          if [ -n "${{ inputs.version }}" ]; then
+            version_tag='${{ inputs.version }}'
+          elif [[ "${{ startsWith(github.ref, 'refs/tags/') }}" == "true" ]]; then
+            version_tag='${{ github.ref_name }}'
+          else
+            crate_version=$(sed -n 's/^version\s*=\s*"\(.*\)"/\1/p' crates/aztec-barretenberg-sys-rs/Cargo.toml | head -n1)
+            version_tag="bb-v${crate_version}"
+          fi
+          echo "VERSION_TAG=${version_tag}" >> $GITHUB_ENV
+
+      - name: Install Rust (stable)
+        run: |
+          set -eux
+          curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain stable
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+          rustup target add aarch64-unknown-linux-gnu
+
+      - name: Install cross toolchain (aarch64)
+        run: |
+          set -euxo pipefail
+          sudo apt-get update
+          sudo apt-get install -y gcc-aarch64-linux-gnu g++-aarch64-linux-gnu binutils-aarch64-linux-gnu build-essential pkg-config libstdc++-12-dev-arm64-cross
+
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Prepare prebuilt cache
+        run: |
+          set -euxo pipefail
+          asset="barretenberg-${VERSION_TAG}-${TARGET}.tar.gz"
+          found=$(find artifacts -type f -name "$asset" | head -n1 || true)
+          if [ -z "$found" ]; then
+            echo "Artifact $asset not found in artifacts/" >&2
+            ls -R artifacts >&2 || true
+            exit 1
+          fi
+          cache_dir="target/bb-prebuilt/${VERSION_TAG}/${TARGET}"
+          mkdir -p "$cache_dir"
+          tar -xzf "$found" -C "$cache_dir"
+          echo "$VERSION_TAG" > "$cache_dir/VERSION"
+
+      - name: Build Rust crate against prebuilts (aarch64 target)
+        env:
+          BB_USE_PREBUILT: "1"
+          BB_PREBUILT_VERSION: ${{ env.VERSION_TAG }}
+          CC_aarch64_unknown_linux_gnu: aarch64-linux-gnu-gcc
+          CXX_aarch64_unknown_linux_gnu: aarch64-linux-gnu-g++
+          AR_aarch64_unknown_linux_gnu: aarch64-linux-gnu-ar
+          RANLIB_aarch64_unknown_linux_gnu: aarch64-linux-gnu-ranlib
+          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
+          PKG_CONFIG_ALLOW_CROSS: "1"
+        run: |
+          cargo build --target aarch64-unknown-linux-gnu -p aztec-barretenberg-rs
+
+  consumer-test-android:
+    name: Consumer test (Android ${{ matrix.target }})
+    needs: build
+    runs-on: ubuntu-22.04
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - aarch64-linux-android
+          - x86_64-linux-android
+    env:
+      TARGET: ${{ matrix.target }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Resolve crate version
+        run: |
+          if [ -n "${{ inputs.version }}" ]; then
+            version_tag='${{ inputs.version }}'
+          elif [[ "${{ startsWith(github.ref, 'refs/tags/') }}" == "true" ]]; then
+            version_tag='${{ github.ref_name }}'
+          else
+            crate_version=$(sed -n 's/^version\s*=\s*"\(.*\)"/\1/p' crates/aztec-barretenberg-sys-rs/Cargo.toml | head -n1)
+            version_tag="bb-v${crate_version}"
+          fi
+          echo "VERSION_TAG=${version_tag}" >> $GITHUB_ENV
+
+      - name: Install Rust (stable)
+        run: |
+          set -eux
+          curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain stable
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+          rustup target add ${TARGET}
+
+      - name: Install Android NDK
+        run: |
+          set -euxo pipefail
+          NDK_VERSION=r26d
+          NDK_ZIP=android-ndk-${NDK_VERSION}-linux.zip
+          curl -fsSL https://dl.google.com/android/repository/${NDK_ZIP} -o ${NDK_ZIP}
+          unzip -q ${NDK_ZIP} -d $HOME
+          rm -f ${NDK_ZIP}
+          ndk_dir=$(echo $HOME/android-ndk-*)
+          echo "ANDROID_NDK=$ndk_dir" >> $GITHUB_ENV
+          echo "ANDROID_API=28" >> $GITHUB_ENV
+
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Prepare prebuilt cache
+        run: |
+          set -euxo pipefail
+          asset="barretenberg-${VERSION_TAG}-${TARGET}.tar.gz"
+          found=$(find artifacts -type f -name "$asset" | head -n1 || true)
+          if [ -z "$found" ]; then
+            echo "Artifact $asset not found in artifacts/" >&2
+            ls -R artifacts >&2 || true
+            exit 1
+          fi
+          cache_dir="target/bb-prebuilt/${VERSION_TAG}/${TARGET}"
+          mkdir -p "$cache_dir"
+          tar -xzf "$found" -C "$cache_dir"
+          echo "$VERSION_TAG" > "$cache_dir/VERSION"
+
+      - name: Build Rust crate against prebuilts (Android)
+        env:
+          BB_USE_PREBUILT: "1"
+          BB_PREBUILT_VERSION: ${{ env.VERSION_TAG }}
+        run: |
+          set -euxo pipefail
+          target="${TARGET}"
+          ndk="${ANDROID_NDK}"
+          api="${ANDROID_API:-28}"
+          toolchain="${ndk}/toolchains/llvm/prebuilt/linux-x86_64/bin"
+          case "$target" in
+            aarch64-linux-android)
+              clang_target="aarch64-linux-android${api}"
+              ;;
+            x86_64-linux-android)
+              clang_target="x86_64-linux-android${api}"
+              ;;
+            *)
+              echo "Unsupported Android target $target" >&2
+              exit 1
+              ;;
+          esac
+          env_suffix=${target//-/_}
+          env_upper=$(echo "$env_suffix" | tr '[:lower:]' '[:upper:]')
+          export CC_${env_suffix}="${toolchain}/${clang_target}-clang"
+          export CXX_${env_suffix}="${toolchain}/${clang_target}-clang++"
+          export AR_${env_suffix}="${toolchain}/llvm-ar"
+          export RANLIB_${env_suffix}="${toolchain}/llvm-ranlib"
+          export CARGO_TARGET_${env_upper}_LINKER="${toolchain}/${clang_target}-clang"
+          export CARGO_TARGET_${env_upper}_AR="${toolchain}/llvm-ar"
+          export CARGO_TARGET_${env_upper}_RANLIB="${toolchain}/llvm-ranlib"
+          export PKG_CONFIG_ALLOW_CROSS=1
+          cargo build --target "$target" -p aztec-barretenberg-rs
+
+  consumer-test-macos:
+    name: Consumer test (macOS aarch64)
+    needs: build
+    runs-on: macos-14
+    env:
+      TARGET: aarch64-apple-darwin
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Resolve crate version
+        run: |
+          if [ -n "${{ inputs.version }}" ]; then
+            version_tag='${{ inputs.version }}'
+          elif [[ "${{ startsWith(github.ref, 'refs/tags/') }}" == "true" ]]; then
+            version_tag='${{ github.ref_name }}'
+          else
+            crate_version=$(sed -n 's/^version\s*=\s*"\(.*\)"/\1/p' crates/aztec-barretenberg-sys-rs/Cargo.toml | head -n1)
+            version_tag="bb-v${crate_version}"
+          fi
+          echo "VERSION_TAG=${version_tag}" >> $GITHUB_ENV
+
+      - name: Install Rust (stable)
+        run: |
+          set -eux
+          curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain stable
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+
+      # No extra toolchain needed for linking on macOS
+
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Prepare prebuilt cache
+        run: |
+          set -euxo pipefail
+          asset="barretenberg-${VERSION_TAG}-${TARGET}.tar.gz"
+          found=$(find artifacts -type f -name "$asset" | head -n1 || true)
+          if [ -z "$found" ]; then
+            echo "Artifact $asset not found in artifacts/" >&2
+            ls -R artifacts >&2 || true
+            exit 1
+          fi
+          cache_dir="target/bb-prebuilt/${VERSION_TAG}/${TARGET}"
+          mkdir -p "$cache_dir"
+          tar -xzf "$found" -C "$cache_dir"
+          echo "$VERSION_TAG" > "$cache_dir/VERSION"
+
+      - name: Build Rust crate against prebuilts (macOS)
+        env:
+          BB_USE_PREBUILT: "1"
+          BB_PREBUILT_VERSION: ${{ env.VERSION_TAG }}
+        run: |
+          cargo build -p aztec-barretenberg-rs
+
+  consumer-test-ios-sim:
+    name: Consumer test (iOS simulator aarch64)
+    needs: build
+    runs-on: macos-14
+    env:
+      TARGET: aarch64-apple-ios-sim
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Resolve crate version
+        run: |
+          if [ -n "${{ inputs.version }}" ]; then
+            version_tag='${{ inputs.version }}'
+          elif [[ "${{ startsWith(github.ref, 'refs/tags/') }}" == "true" ]]; then
+            version_tag='${{ github.ref_name }}'
+          else
+            crate_version=$(sed -n 's/^version\s*=\s*"\(.*\)"/\1/p' crates/aztec-barretenberg-sys-rs/Cargo.toml | head -n1)
+            version_tag="bb-v${crate_version}"
+          fi
+          echo "VERSION_TAG=${version_tag}" >> $GITHUB_ENV
+
+      - name: Install Rust (stable) + iOS target
+        run: |
+          set -eux
+          curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain stable
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+          rustup target add ${{ env.TARGET }}
+
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Prepare prebuilt cache
+        run: |
+          set -euxo pipefail
+          asset="barretenberg-${VERSION_TAG}-${TARGET}.tar.gz"
+          found=$(find artifacts -type f -name "$asset" | head -n1 || true)
+          if [ -z "$found" ]; then
+            echo "Artifact $asset not found in artifacts/" >&2
+            ls -R artifacts >&2 || true
+            exit 1
+          fi
+          cache_dir="target/bb-prebuilt/${VERSION_TAG}/${TARGET}"
+          mkdir -p "$cache_dir"
+          tar -xzf "$found" -C "$cache_dir"
+          echo "$VERSION_TAG" > "$cache_dir/VERSION"
+          # Do not set BB_LIB_DIR; allow build.rs to find prebuilt by TARGET
+
+      - name: Build Rust crate against prebuilts (iOS sim)
+        env:
+          BB_USE_PREBUILT: "1"
+          BB_PREBUILT_VERSION: ${{ env.VERSION_TAG }}
+        run: |
+          cargo build -p aztec-barretenberg-rs --target ${{ env.TARGET }}
+
+  consumer-test-ios:
+    name: Consumer test (iOS device aarch64)
+    needs: build
+    runs-on: macos-14
+    env:
+      TARGET: aarch64-apple-ios
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Resolve crate version
+        run: |
+          if [ -n "${{ inputs.version }}" ]; then
+            version_tag='${{ inputs.version }}'
+          elif [[ "${{ startsWith(github.ref, 'refs/tags/') }}" == "true" ]]; then
+            version_tag='${{ github.ref_name }}'
+          else
+            crate_version=$(sed -n 's/^version\s*=\s*"\(.*\)"/\1/p' crates/aztec-barretenberg-sys-rs/Cargo.toml | head -n1)
+            version_tag="bb-v${crate_version}"
+          fi
+          echo "VERSION_TAG=${version_tag}" >> $GITHUB_ENV
+
+      - name: Install Rust (stable) + iOS target
+        run: |
+          set -eux
+          curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain stable
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+          rustup target add ${{ env.TARGET }}
+
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Prepare prebuilt cache
+        run: |
+          set -euxo pipefail
+          asset="barretenberg-${VERSION_TAG}-${TARGET}.tar.gz"
+          found=$(find artifacts -type f -name "$asset" | head -n1 || true)
+          if [ -z "$found" ]; then
+            echo "Artifact $asset not found in artifacts/" >&2
+            ls -R artifacts >&2 || true
+            exit 1
+          fi
+          cache_dir="target/bb-prebuilt/${VERSION_TAG}/${TARGET}"
+          mkdir -p "$cache_dir"
+          tar -xzf "$found" -C "$cache_dir"
+          echo "$VERSION_TAG" > "$cache_dir/VERSION"
+          # Do not set BB_LIB_DIR; allow build.rs to find prebuilt by TARGET
+
+      - name: Build Rust crate against prebuilts (iOS device)
+        env:
+          BB_USE_PREBUILT: "1"
+          BB_PREBUILT_VERSION: ${{ env.VERSION_TAG }}
+        run: |
+          cargo build -p aztec-barretenberg-rs --target ${{ env.TARGET }}
+
+  download-test-ios-sim-after-release:
+    name: Download test (iOS simulator aarch64, after release)
+    needs: release
+    if: ${{ needs.release.result == 'success' }}
+    runs-on: macos-14
+    env:
+      TARGET: aarch64-apple-ios-sim
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Resolve crate version
+        run: |
+          crate_version=$(sed -n 's/^version\s*=\s*"\(.*\)"/\1/p' crates/aztec-barretenberg-sys-rs/Cargo.toml | head -n1)
+          version_tag="bb-v${crate_version}"
+          echo "CRATE_VERSION=${crate_version}" >> $GITHUB_ENV
+          echo "VERSION_TAG=${version_tag}" >> $GITHUB_ENV
+
+      - name: Clean prebuilt cache
+        run: rm -rf target/bb-prebuilt || true
+
+      - name: Install Rust (stable)
+        run: |
+          set -eux
+          curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain stable
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+          rustup target add ${{ env.TARGET }}
+
+      - name: Build Rust crate (download from Releases)
+        env:
+          BB_USE_PREBUILT: "1"
+        run: |
+          cargo build -p aztec-barretenberg-rs --target ${{ env.TARGET }}
+
+  download-test-ios-after-release:
+    name: Download test (iOS device aarch64, after release)
+    needs: release
+    if: ${{ needs.release.result == 'success' }}
+    runs-on: macos-14
+    env:
+      TARGET: aarch64-apple-ios
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Resolve crate version
+        run: |
+          crate_version=$(sed -n 's/^version\s*=\s*"\(.*\)"/\1/p' crates/aztec-barretenberg-sys-rs/Cargo.toml | head -n1)
+          version_tag="bb-v${crate_version}"
+          echo "CRATE_VERSION=${crate_version}" >> $GITHUB_ENV
+          echo "VERSION_TAG=${version_tag}" >> $GITHUB_ENV
+
+      - name: Clean prebuilt cache
+        run: rm -rf target/bb-prebuilt || true
+
+      - name: Install Rust (stable)
+        run: |
+          set -eux
+          curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain stable
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+          rustup target add ${{ env.TARGET }}
+
+      - name: Build Rust crate (download from Releases)
+        env:
+          BB_USE_PREBUILT: "1"
+        run: |
+          cargo build -p aztec-barretenberg-rs --target ${{ env.TARGET }}
+  download-test-linux-x64-after-release:
+    name: Download test (Linux x86_64, after release)
+    needs: release
+    if: ${{ needs.release.result == 'success' }}
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      
+      - name: Resolve crate version
+        run: |
+          crate_version=$(sed -n 's/^version\s*=\s*"\(.*\)"/\1/p' crates/aztec-barretenberg-sys-rs/Cargo.toml | head -n1)
+          version_tag="bb-v${crate_version}"
+          echo "CRATE_VERSION=${crate_version}" >> $GITHUB_ENV
+          echo "VERSION_TAG=${version_tag}" >> $GITHUB_ENV
+
+      - name: Clean prebuilt cache
+        run: rm -rf target/bb-prebuilt || true
+
+      - name: Install Rust (stable)
+        run: |
+          set -eux
+          curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain stable
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+
+      # No C++ toolchain needed; linking only
+
+      - name: Build Rust crate (download from Releases)
+        env:
+          BB_USE_PREBUILT: "1"
+        run: |
+          cargo build -p aztec-barretenberg-rs
+
+  download-test-linux-aarch64-after-release:
+    name: Download test (Linux aarch64 cross, after release)
+    needs: release
+    if: ${{ needs.release.result == 'success' }}
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Resolve crate version
+        run: |
+          crate_version=$(sed -n 's/^version\s*=\s*"\(.*\)"/\1/p' crates/aztec-barretenberg-sys-rs/Cargo.toml | head -n1)
+          version_tag="bb-v${crate_version}"
+          echo "CRATE_VERSION=${crate_version}" >> $GITHUB_ENV
+          echo "VERSION_TAG=${version_tag}" >> $GITHUB_ENV
+
+      - name: Clean prebuilt cache
+        run: rm -rf target/bb-prebuilt || true
+
+      - name: Install Rust (stable)
+        run: |
+          set -eux
+          curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain stable
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+          rustup target add aarch64-unknown-linux-gnu
+
+      - name: Install cross toolchain (aarch64)
+        run: |
+          set -euxo pipefail
+          sudo apt-get update
+          sudo apt-get install -y gcc-aarch64-linux-gnu g++-aarch64-linux-gnu binutils-aarch64-linux-gnu build-essential pkg-config libstdc++-12-dev-arm64-cross
+
+      - name: Build Rust crate (download from Releases)
+        env:
+          BB_USE_PREBUILT: "1"
+          CC_aarch64_unknown_linux_gnu: aarch64-linux-gnu-gcc
+          CXX_aarch64_unknown_linux_gnu: aarch64-linux-gnu-g++
+          AR_aarch64_unknown_linux_gnu: aarch64-linux-gnu-ar
+          RANLIB_aarch64_unknown_linux_gnu: aarch64-linux-gnu-ranlib
+          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
+          PKG_CONFIG_ALLOW_CROSS: "1"
+        run: |
+          cargo build --target aarch64-unknown-linux-gnu -p aztec-barretenberg-rs
+
+  download-test-macos-after-release:
+    name: Download test (macOS aarch64, after release)
+    needs: release
+    if: ${{ needs.release.result == 'success' }}
+    runs-on: macos-14
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Resolve crate version
+        run: |
+          crate_version=$(sed -n 's/^version\s*=\s*"\(.*\)"/\1/p' crates/aztec-barretenberg-sys-rs/Cargo.toml | head -n1)
+          version_tag="bb-v${crate_version}"
+          echo "CRATE_VERSION=${crate_version}" >> $GITHUB_ENV
+          echo "VERSION_TAG=${version_tag}" >> $GITHUB_ENV
+
+      - name: Clean prebuilt cache
+        run: rm -rf target/bb-prebuilt || true
+
+      - name: Install Rust (stable)
+        run: |
+          set -eux
+          curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain stable
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+
+      - name: Setup toolchain
+        run: |
+          brew update
+          brew install cmake ninja llvm@19
+          echo "PATH=$(brew --prefix llvm@19)/bin:$PATH" >> $GITHUB_ENV
+          echo "CC=clang" >> $GITHUB_ENV
+          echo "CXX=clang++" >> $GITHUB_ENV
+          echo "SDKROOT=$(xcrun --sdk macosx --show-sdk-path)" >> $GITHUB_ENV
+          echo "MACOSX_DEPLOYMENT_TARGET=13.0" >> $GITHUB_ENV
+
+      - name: Build Rust crate (download from Releases)
+        env:
+          BB_USE_PREBUILT: "1"
+        run: |
+          cargo build -p aztec-barretenberg-rs
+
+  download-test-android-after-release:
+    name: Download test (Android ${{ matrix.target }}, after release)
+    needs: release
+    if: ${{ needs.release.result == 'success' }}
+    runs-on: ubuntu-22.04
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - aarch64-linux-android
+          - x86_64-linux-android
+    env:
+      TARGET: ${{ matrix.target }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Resolve crate version
+        run: |
+          crate_version=$(sed -n 's/^version\s*=\s*"\(.*\)"/\1/p' crates/aztec-barretenberg-sys-rs/Cargo.toml | head -n1)
+          version_tag="bb-v${crate_version}"
+          echo "CRATE_VERSION=${crate_version}" >> $GITHUB_ENV
+          echo "VERSION_TAG=${version_tag}" >> $GITHUB_ENV
+
+      - name: Clean prebuilt cache
+        run: rm -rf target/bb-prebuilt || true
+
+      - name: Install Rust (stable)
+        run: |
+          set -eux
+          curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain stable
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+          rustup target add ${TARGET}
+
+      - name: Install Android NDK
+        run: |
+          set -euxo pipefail
+          NDK_VERSION=r26d
+          NDK_ZIP=android-ndk-${NDK_VERSION}-linux.zip
+          curl -fsSL https://dl.google.com/android/repository/${NDK_ZIP} -o ${NDK_ZIP}
+          unzip -q ${NDK_ZIP} -d $HOME
+          rm -f ${NDK_ZIP}
+          ndk_dir=$(echo $HOME/android-ndk-*)
+          echo "ANDROID_NDK=$ndk_dir" >> $GITHUB_ENV
+          echo "ANDROID_API=28" >> $GITHUB_ENV
+
+      - name: Build Rust crate (download from Releases)
+        env:
+          BB_USE_PREBUILT: "1"
+        run: |
+          set -euxo pipefail
+          target="${TARGET}"
+          ndk="${ANDROID_NDK}"
+          api="${ANDROID_API:-28}"
+          toolchain="${ndk}/toolchains/llvm/prebuilt/linux-x86_64/bin"
+          case "$target" in
+            aarch64-linux-android)
+              clang_target="aarch64-linux-android${api}"
+              ;;
+            x86_64-linux-android)
+              clang_target="x86_64-linux-android${api}"
+              ;;
+            *)
+              echo "Unsupported Android target $target" >&2
+              exit 1
+              ;;
+          esac
+          env_suffix=${target//-/_}
+          env_upper=$(echo "$env_suffix" | tr '[:lower:]' '[:upper:]')
+          export CC_${env_suffix}="${toolchain}/${clang_target}-clang"
+          export CXX_${env_suffix}="${toolchain}/${clang_target}-clang++"
+          export AR_${env_suffix}="${toolchain}/llvm-ar"
+          export RANLIB_${env_suffix}="${toolchain}/llvm-ranlib"
+          export CARGO_TARGET_${env_upper}_LINKER="${toolchain}/${clang_target}-clang"
+          export CARGO_TARGET_${env_upper}_AR="${toolchain}/llvm-ar"
+          export CARGO_TARGET_${env_upper}_RANLIB="${toolchain}/llvm-ranlib"
+          export PKG_CONFIG_ALLOW_CROSS=1
+          cargo build --target "$target" -p aztec-barretenberg-rs
+      
