@@ -1,6 +1,6 @@
 [package]
 name = "aztec-barretenberg-sys-rs"
-version = "1.1.11"
+version = "2.0.3-usernode.1"
 edition = "2021"
 license = "MIT"
 description = "Unsafe FFI bindings to a minimal Barretenberg C++ shim for MegaHonk and Schnorr."

@@ -82,8 +82,7 @@ jobs:
         run: |
           echo "BB_USE_PREBUILT=1" >> $GITHUB_ENV
           crate_version=$(sed -n 's/^version\s*=\s*"\(.*\)"/\1/p' crates/aztec-barretenberg-sys-rs/Cargo.toml | head -n1)
-          echo "BB_PREBUILT_VERSION=bb-v${crate_version}" >> $GITHUB_ENV
-          echo "BB_FORCE_LOCAL_SHIM=1" >> $GITHUB_ENV
+          echo "BB_PREBUILT_VERSION=v${crate_version}" >> $GITHUB_ENV
 
       # Allow full concurrency for merge-train PRs, one-run-per-branch for everything else.
       - name: Set Instance Postfix for merge-train
@@ -141,7 +140,6 @@ jobs:
           GCP_PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
           BB_USE_PREBUILT: ${{ env.BB_USE_PREBUILT }}
           BB_PREBUILT_VERSION: ${{ env.BB_PREBUILT_VERSION }}
-          BB_FORCE_LOCAL_SHIM: ${{ env.BB_FORCE_LOCAL_SHIM }}
         run: |
           if [ "${{ github.event_name }}" == "merge_group" ] || [ "${CI_MERGE_QUEUE:-0}" -eq 1 ]; then
             exec ./ci.sh merge-queue
