@@ -122,7 +122,7 @@ fn target_triple() -> String {
 
 fn crate_version_tag() -> String {
     let v = env::var("CARGO_PKG_VERSION").expect("CARGO_PKG_VERSION not set");
-    format!("bb-v{}", v)
+    format!("v{}", v)
 }
 
 fn ensure_parent_dir(path: &Path) -> io::Result<()> {
@@ -451,7 +451,6 @@ fn main() {
     println!("cargo:rerun-if-env-changed=BB_PREBUILT_BASE_URL");
     println!("cargo:rerun-if-env-changed=BB_PREBUILT_ALLOW_BUILD_FALLBACK");
     println!("cargo:rerun-if-env-changed=BB_PREBUILT_CACHE_DIR");
-    println!("cargo:rerun-if-env-changed=BB_FORCE_LOCAL_SHIM");
     println!("cargo:rerun-if-env-changed=BB_PREBUILT_SHA256");
     println!("cargo:rerun-if-env-changed=BB_CRS_URL_BN254_G1");
     println!("cargo:rerun-if-env-changed=BB_CRS_URL_BN254_G2");
@@ -587,18 +586,8 @@ fn main() {
     // Decide whether to use an existing shim archive (from CMake local build or downloaded prebuilt)
     // or compile a local shim with cc-rs.
     let shim_archive = bb_lib_dir.join("libbb_rust_api.a");
-    let requested_force_local_shim = env::var("BB_FORCE_LOCAL_SHIM")
-        .ok()
-        .map(|s| s == "1" || s.eq_ignore_ascii_case("true"))
-        .unwrap_or(false);
-    let force_local_shim = requested_force_local_shim && using_downloaded_prebuilt;
-    if requested_force_local_shim && !using_downloaded_prebuilt {
-        println!(
-            "cargo:warning=Ignoring BB_FORCE_LOCAL_SHIM: using CMake-built bb_rust_api for non-prebuilt libs"
-        );
-    }
 
-    if shim_archive.exists() && !force_local_shim {
+    if shim_archive.exists() {
         if using_downloaded_prebuilt {
             println!(
                 "cargo:warning=Using downloaded prebuilt bb_rust_api from {}",
@@ -612,11 +601,8 @@ fn main() {
         }
         println!("cargo:rustc-link-lib=static=bb_rust_api");
     } else {
-        if allow_fallback || force_local_shim {
-            println!(
-                "cargo:warning=Compiling local C++ shim (force_local_shim={})",
-                force_local_shim
-            );
+        if allow_fallback {
+            println!("cargo:warning=Compiling local C++ shim");
             // Compile shim from a temporary copy to avoid local source-tree header collisions when linking against prebuilt.
             let shim_src = out_dir.join("bb_rust_api.cpp");
             let shim_in = bb_cpp_src.join("bb_rust_api.cpp");
