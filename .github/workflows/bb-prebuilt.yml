@@ -3,11 +3,11 @@ name: Build & Publish Barretenberg Prebuilts
 on:
   push:
     tags:
-      - "bb-v*"
+      - "v*-usernode*"
   workflow_dispatch:
     inputs:
       version:
-        description: Tag or version string to build/publish (e.g., bb-v0.1.0)
+        description: Tag or version string to build/publish (e.g., v2.0.3-usernode.1)
         required: false
         default: ""
       publish:
@@ -62,9 +62,9 @@ jobs:
             version_tag='${{ github.ref_name }}'
           else
             crate_version=$(sed -n 's/^version\s*=\s*"\(.*\)"/\1/p' crates/aztec-barretenberg-sys-rs/Cargo.toml | head -n1)
-            version_tag="bb-v${crate_version}"
+            version_tag="v${crate_version}"
           fi
-          echo "CRATE_VERSION=${version_tag#bb-v}" >> $GITHUB_ENV
+          echo "CRATE_VERSION=${version_tag#v}" >> $GITHUB_ENV
           echo "VERSION_TAG=${version_tag}" >> $GITHUB_ENV
 
       - name: Install LLVM/Clang 19 (Linux)
@@ -503,9 +503,9 @@ jobs:
             version_tag='${{ github.ref_name }}'
           else
             crate_version=$(sed -n 's/^version\s*=\s*"\(.*\)"/\1/p' crates/aztec-barretenberg-sys-rs/Cargo.toml | head -n1)
-            version_tag="bb-v${crate_version}"
+            version_tag="v${crate_version}"
           fi
-          echo "CRATE_VERSION=${version_tag#bb-v}" >> $GITHUB_ENV
+          echo "CRATE_VERSION=${version_tag#v}" >> $GITHUB_ENV
           echo "VERSION_TAG=${version_tag}" >> $GITHUB_ENV
 
       - name: Upload assets (create/update release)
@@ -546,7 +546,7 @@ jobs:
             version_tag='${{ github.ref_name }}'
           else
             crate_version=$(sed -n 's/^version\s*=\s*"\(.*\)"/\1/p' crates/aztec-barretenberg-sys-rs/Cargo.toml | head -n1)
-            version_tag="bb-v${crate_version}"
+            version_tag="v${crate_version}"
           fi
           echo "VERSION_TAG=${version_tag}" >> $GITHUB_ENV
 
@@ -605,7 +605,7 @@ jobs:
             version_tag='${{ github.ref_name }}'
           else
             crate_version=$(sed -n 's/^version\s*=\s*"\(.*\)"/\1/p' crates/aztec-barretenberg-sys-rs/Cargo.toml | head -n1)
-            version_tag="bb-v${crate_version}"
+            version_tag="v${crate_version}"
           fi
           echo "VERSION_TAG=${version_tag}" >> $GITHUB_ENV
 
@@ -681,7 +681,7 @@ jobs:
             version_tag='${{ github.ref_name }}'
           else
             crate_version=$(sed -n 's/^version\s*=\s*"\(.*\)"/\1/p' crates/aztec-barretenberg-sys-rs/Cargo.toml | head -n1)
-            version_tag="bb-v${crate_version}"
+            version_tag="v${crate_version}"
           fi
           echo "VERSION_TAG=${version_tag}" >> $GITHUB_ENV
 
@@ -778,7 +778,7 @@ jobs:
             version_tag='${{ github.ref_name }}'
           else
             crate_version=$(sed -n 's/^version\s*=\s*"\(.*\)"/\1/p' crates/aztec-barretenberg-sys-rs/Cargo.toml | head -n1)
-            version_tag="bb-v${crate_version}"
+            version_tag="v${crate_version}"
           fi
           echo "VERSION_TAG=${version_tag}" >> $GITHUB_ENV
 
@@ -837,7 +837,7 @@ jobs:
             version_tag='${{ github.ref_name }}'
           else
             crate_version=$(sed -n 's/^version\s*=\s*"\(.*\)"/\1/p' crates/aztec-barretenberg-sys-rs/Cargo.toml | head -n1)
-            version_tag="bb-v${crate_version}"
+            version_tag="v${crate_version}"
           fi
           echo "VERSION_TAG=${version_tag}" >> $GITHUB_ENV
 
@@ -896,7 +896,7 @@ jobs:
             version_tag='${{ github.ref_name }}'
           else
             crate_version=$(sed -n 's/^version\s*=\s*"\(.*\)"/\1/p' crates/aztec-barretenberg-sys-rs/Cargo.toml | head -n1)
-            version_tag="bb-v${crate_version}"
+            version_tag="v${crate_version}"
           fi
           echo "VERSION_TAG=${version_tag}" >> $GITHUB_ENV
 
@@ -949,7 +949,7 @@ jobs:
       - name: Resolve crate version
         run: |
           crate_version=$(sed -n 's/^version\s*=\s*"\(.*\)"/\1/p' crates/aztec-barretenberg-sys-rs/Cargo.toml | head -n1)
-          version_tag="bb-v${crate_version}"
+          version_tag="v${crate_version}"
           echo "CRATE_VERSION=${crate_version}" >> $GITHUB_ENV
           echo "VERSION_TAG=${version_tag}" >> $GITHUB_ENV
 
@@ -983,7 +983,7 @@ jobs:
       - name: Resolve crate version
         run: |
           crate_version=$(sed -n 's/^version\s*=\s*"\(.*\)"/\1/p' crates/aztec-barretenberg-sys-rs/Cargo.toml | head -n1)
-          version_tag="bb-v${crate_version}"
+          version_tag="v${crate_version}"
           echo "CRATE_VERSION=${crate_version}" >> $GITHUB_ENV
           echo "VERSION_TAG=${version_tag}" >> $GITHUB_ENV
 
@@ -1014,7 +1014,7 @@ jobs:
       - name: Resolve crate version
         run: |
           crate_version=$(sed -n 's/^version\s*=\s*"\(.*\)"/\1/p' crates/aztec-barretenberg-sys-rs/Cargo.toml | head -n1)
-          version_tag="bb-v${crate_version}"
+          version_tag="v${crate_version}"
           echo "CRATE_VERSION=${crate_version}" >> $GITHUB_ENV
           echo "VERSION_TAG=${version_tag}" >> $GITHUB_ENV
 
@@ -1047,7 +1047,7 @@ jobs:
       - name: Resolve crate version
         run: |
           crate_version=$(sed -n 's/^version\s*=\s*"\(.*\)"/\1/p' crates/aztec-barretenberg-sys-rs/Cargo.toml | head -n1)
-          version_tag="bb-v${crate_version}"
+          version_tag="v${crate_version}"
           echo "CRATE_VERSION=${crate_version}" >> $GITHUB_ENV
           echo "VERSION_TAG=${version_tag}" >> $GITHUB_ENV
 
@@ -1091,7 +1091,7 @@ jobs:
       - name: Resolve crate version
         run: |
           crate_version=$(sed -n 's/^version\s*=\s*"\(.*\)"/\1/p' crates/aztec-barretenberg-sys-rs/Cargo.toml | head -n1)
-          version_tag="bb-v${crate_version}"
+          version_tag="v${crate_version}"
           echo "CRATE_VERSION=${crate_version}" >> $GITHUB_ENV
           echo "VERSION_TAG=${version_tag}" >> $GITHUB_ENV
 
@@ -1140,7 +1140,7 @@ jobs:
       - name: Resolve crate version
         run: |
           crate_version=$(sed -n 's/^version\s*=\s*"\(.*\)"/\1/p' crates/aztec-barretenberg-sys-rs/Cargo.toml | head -n1)
-          version_tag="bb-v${crate_version}"
+          version_tag="v${crate_version}"
           echo "CRATE_VERSION=${crate_version}" >> $GITHUB_ENV
           echo "VERSION_TAG=${version_tag}" >> $GITHUB_ENV
 
