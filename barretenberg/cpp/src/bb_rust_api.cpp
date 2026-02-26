@@ -31,6 +31,7 @@
 #include "barretenberg/crypto/poseidon2/poseidon2_permutation.hpp"
 #include "barretenberg/crypto/poseidon2/poseidon2_params.hpp"
 #include "barretenberg/crypto/poseidon2/poseidon2.hpp"
+#include "barretenberg/stdlib/hash/poseidon2/poseidon2.hpp"
 #include "barretenberg/ecc/curves/grumpkin/grumpkin.hpp"
 #include "barretenberg/crypto/schnorr/schnorr.hpp"
 #include "barretenberg/crypto/schnorr/schnorr.tcc"
@@ -620,8 +621,16 @@ int bb_uhz_leaf_vk(const uint8_t* vk, size_t vk_len, uint8_t** out_vk, size_t* o
         auto vk_hash_ff = RecFlavor::FF::from_witness(&builder, native_vk->hash());
         auto vk_and_hash = std::make_shared<typename RecFlavor::VKAndHash>(vk_std, vk_hash_ff);
 
+        // `create_mock_honk_proof` expects the *inner* (ACIR) public input count.
+        // The vk's `num_public_inputs` includes additional barretenberg public inputs
+        // contributed by the IO type (e.g. aggregation object).
+        const size_t total_public_inputs = static_cast<size_t>(native_vk->num_public_inputs);
+        if (total_public_inputs < MockIO::PUBLIC_INPUTS_SIZE) {
+            return BB_STATUS_MALFORMED_VK;
+        }
+        const size_t inner_public_inputs = total_public_inputs - MockIO::PUBLIC_INPUTS_SIZE;
         bb::HonkProof mock_proof =
-            acir_format::create_mock_honk_proof<bb::UltraZKFlavor, MockIO>(native_vk->num_public_inputs);
+            acir_format::create_mock_honk_proof<bb::UltraZKFlavor, MockIO>(inner_public_inputs);
         std::vector<typename RecFlavor::FF> proof_fields_ff;
         proof_fields_ff.reserve(mock_proof.size());
         for (const auto& field : mock_proof) {
@@ -634,12 +643,20 @@ int bb_uhz_leaf_vk(const uint8_t* vk, size_t vk_len, uint8_t** out_vk, size_t* o
         if (rec_for_oink.key->public_inputs.empty()) {
             return BB_STATUS_MALFORMED_VK;
         }
-        auto scoped_nullifier = rec_for_oink.key->public_inputs.back();
-        scoped_nullifier.set_public();
+        // Semantic leaf statement: a single commitment to all UltraZK public inputs.
+        // Downstream aggregation expects one semantic public input plus DefaultIO pairing points.
+        auto leaf_commitment = bb::stdlib::poseidon2<Builder>::hash(rec_for_oink.key->public_inputs);
+        leaf_commitment.set_public();
 
         RecVerifier verifier{ &builder, vk_and_hash };
         typename RecVerifier::StdlibProof stdlib_proof(proof_fields_ff);
-        (void)verifier.template verify_proof<bb::stdlib::recursion::honk::DefaultIO<Builder>>(stdlib_proof);
+        auto output = verifier.template verify_proof<MockIO>(stdlib_proof);
+
+        // Propagate the recursion accumulator (pairing points) as DefaultIO public inputs,
+        // so the wrapped Mega proof is compatible with downstream recursive aggregation.
+        MockIO out_io;
+        out_io.pairing_inputs = output.points_accumulator;
+        out_io.set_public();
 
         builder.finalize_circuit(true);
         auto pk = std::make_shared<bb::DeciderProvingKey_<bb::MegaFlavor>>(builder);
@@ -662,8 +679,9 @@ int bb_uhz_leaf_vk(const uint8_t* vk, size_t vk_len, uint8_t** out_vk, size_t* o
 
 // Wrap a concrete UltraZK proof into a Mega proof that:
 // - recursive-verifies the UltraZK proof against `vk`,
-// - constrains the last inner public input (scoped nullifier) to equal `expected_leaf_be32`,
-// - publishes that scoped nullifier as the sole outer public input.
+// - constrains Poseidon2(public_inputs[]) to equal `expected_leaf_be32`,
+// - publishes that commitment as the sole *semantic* outer public input, plus DefaultIO
+//   pairing-point public inputs required for recursive aggregation.
 int bb_uhz_leaf_wrap(const uint8_t* proof,
                      size_t proof_len,
                      const uint8_t* vk,
@@ -695,6 +713,7 @@ int bb_uhz_leaf_wrap(const uint8_t* proof,
         using RecFlavor = bb::UltraZKRecursiveFlavor_<Builder>;
         using RecVerifier = bb::stdlib::recursion::honk::UltraRecursiveVerifier_<RecFlavor>;
         using StdlibOink = bb::stdlib::recursion::honk::OinkRecursiveVerifier_<RecFlavor>;
+        using OutIO = bb::stdlib::recursion::honk::DefaultIO<Builder>;
 
         Builder builder;
         if (!vk_native.has_value()) {
@@ -717,15 +736,21 @@ int bb_uhz_leaf_wrap(const uint8_t* proof,
         if (rec_for_oink.key->public_inputs.empty()) {
             return BB_STATUS_MALFORMED_PROOF;
         }
-        auto scoped_nullifier = rec_for_oink.key->public_inputs.back();
         auto expected_leaf_native = fr_from_be32(expected_leaf_be32);
         auto expected_leaf_ff = RecFlavor::FF::from_witness(&builder, expected_leaf_native);
-        scoped_nullifier.assert_equal(expected_leaf_ff);
-        scoped_nullifier.set_public();
+        auto leaf_commitment = bb::stdlib::poseidon2<Builder>::hash(rec_for_oink.key->public_inputs);
+        leaf_commitment.assert_equal(expected_leaf_ff);
+        leaf_commitment.set_public();
 
         RecVerifier verifier{ &builder, vk_and_hash };
         typename RecVerifier::StdlibProof stdlib_proof(proof_fields_ff);
-        (void)verifier.template verify_proof<bb::stdlib::recursion::honk::DefaultIO<Builder>>(stdlib_proof);
+        auto output = verifier.template verify_proof<OutIO>(stdlib_proof);
+
+        // Propagate the recursion accumulator (pairing points) as DefaultIO public inputs,
+        // so the wrapped Mega proof is compatible with downstream recursive aggregation.
+        OutIO out_io;
+        out_io.pairing_inputs = output.points_accumulator;
+        out_io.set_public();
 
         builder.finalize_circuit(true);
         auto pk = std::make_shared<bb::DeciderProvingKey_<bb::MegaFlavor>>(builder);
@@ -1158,4 +1183,3 @@ int bb_schnorr_blake2s_verify_xy(const uint8_t* msg,
     }
 }
 }
-
