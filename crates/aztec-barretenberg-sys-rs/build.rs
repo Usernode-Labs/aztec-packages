@@ -185,9 +185,6 @@ fn extract_tar_gz(archive: &Path, dest: &Path) -> io::Result<()> {
 
 struct Prebuilt {
     lib: PathBuf,
-    include: PathBuf,
-    include_deps_msgpack: PathBuf,
-    include_deps_tracy: PathBuf,
 }
 
 fn prebuilt_cache_dir() -> PathBuf {
@@ -213,13 +210,9 @@ fn fetch_prebuilt(version_tag: &str, target: &str) -> io::Result<Prebuilt> {
     let base_url = default_base_url();
     let cache_root = prebuilt_cache_dir().join(version_tag).join(target);
     let lib_dir = cache_root.join("lib");
-    let inc_dir = cache_root.join("include");
     if lib_dir.join("libbarretenberg.a").exists() {
         return Ok(Prebuilt {
             lib: lib_dir,
-            include: inc_dir,
-            include_deps_msgpack: cache_root.join("include-deps/msgpack"),
-            include_deps_tracy: cache_root.join("include-deps/tracy"),
         });
     }
 
@@ -237,9 +230,6 @@ fn fetch_prebuilt(version_tag: &str, target: &str) -> io::Result<Prebuilt> {
     extract_tar_gz(&archive_path, &cache_root)?;
     let pb = Prebuilt {
         lib: lib_dir,
-        include: inc_dir,
-        include_deps_msgpack: cache_root.join("include-deps/msgpack"),
-        include_deps_tracy: cache_root.join("include-deps/tracy"),
     };
     if !pb.lib.join("libbarretenberg.a").exists() {
         return Err(io::Error::new(
@@ -460,7 +450,6 @@ fn main() {
 
     // Basic paths
     let repo_root = repo_root();
-    let bb_cpp_src = bb_cpp_dir().join("src");
     let out_dir = PathBuf::from(env::var("OUT_DIR").expect("OUT_DIR set by cargo"));
 
     // Resolve build/lib dirs; allow env overrides
@@ -488,11 +477,6 @@ fn main() {
         .map(|p| p)
         .unwrap_or_else(|| bb_build_dir.join("lib"));
 
-    // Track include directories for shim
-    let mut inc_primary = bb_cpp_dir().join("src");
-    let mut inc_msgpack = bb_build_dir.join("_deps/msgpack-c/src/msgpack-c/include");
-    let mut inc_tracy = bb_build_dir.join("_deps/tracy-src/public");
-
     let mut using_downloaded_prebuilt = false;
     if env_bb_lib.is_some() {
         if !bb_lib_dir.exists() {
@@ -505,21 +489,6 @@ fn main() {
             "cargo:warning=Using BB_LIB_DIR={} (no build)",
             bb_lib_dir.display()
         );
-        // If BB_LIB_DIR points to a prebuilt-style tree, prefer adjacent include dirs.
-        if let Some(root) = bb_lib_dir.parent() {
-            let inc = root.join("include");
-            let m = root.join("include-deps/msgpack");
-            let t = root.join("include-deps/tracy");
-            if inc.exists() {
-                inc_primary = inc;
-            }
-            if m.exists() {
-                inc_msgpack = m;
-            }
-            if t.exists() {
-                inc_tracy = t;
-            }
-        }
     } else if use_prebuilt {
         let ver = env::var("BB_PREBUILT_VERSION").unwrap_or_else(|_| crate_version_tag());
         let triple = target_triple();
@@ -533,9 +502,6 @@ fn main() {
             match fetch_prebuilt(&ver, &triple) {
                 Ok(pb) => {
                     bb_lib_dir = pb.lib.clone();
-                    inc_primary = pb.include.clone();
-                    inc_msgpack = pb.include_deps_msgpack.clone();
-                    inc_tracy = pb.include_deps_tracy.clone();
                     using_downloaded_prebuilt = true;
                     println!(
                         "cargo:warning=Using prebuilt Barretenberg {} for {}",
@@ -565,9 +531,6 @@ fn main() {
             );
             ensure_barretenberg_built(&bb_build_dir);
             bb_lib_dir = bb_build_dir.join("lib");
-            inc_primary = bb_cpp_dir().join("src");
-            inc_msgpack = bb_build_dir.join("_deps/msgpack-c/src/msgpack-c/include");
-            inc_tracy = bb_build_dir.join("_deps/tracy-src/public");
         } else {
             panic!("Barretenberg libs not available and fallback disabled. Provide prebuilt (BB_USE_PREBUILT=1) or set BB_PREBUILT_ALLOW_BUILD_FALLBACK=1.");
         }
@@ -583,61 +546,28 @@ fn main() {
         bb_lib_dir.join("libbb_rust_api.a").display()
     );
 
-    // Decide whether to use an existing shim archive (from CMake local build or downloaded prebuilt)
-    // or compile a local shim with cc-rs.
+    // bb_rust_api must come from the same Barretenberg build (or prebuilt package) as libbarretenberg.
+    // Building a local shim against a different libbarretenberg is unsafe (ABI/allocator mismatches).
     let shim_archive = bb_lib_dir.join("libbb_rust_api.a");
 
-    if shim_archive.exists() {
-        if using_downloaded_prebuilt {
-            println!(
-                "cargo:warning=Using downloaded prebuilt bb_rust_api from {}",
-                shim_archive.display()
-            );
-        } else {
-            println!(
-                "cargo:warning=Using local CMake-built bb_rust_api from {}",
-                shim_archive.display()
-            );
-        }
-        println!("cargo:rustc-link-lib=static=bb_rust_api");
-    } else {
-        if allow_fallback {
-            println!("cargo:warning=Compiling local C++ shim");
-            // Compile shim from a temporary copy to avoid local source-tree header collisions when linking against prebuilt.
-            let shim_src = out_dir.join("bb_rust_api.cpp");
-            let shim_in = bb_cpp_src.join("bb_rust_api.cpp");
-            std::fs::copy(&shim_in, &shim_src).expect("copy bb_rust_api.cpp");
-
-            let mut cc_build = cc::Build::new();
-            cc_build
-                .cpp(true)
-                .flag("-std=c++20")
-                .flag("-fPIC")
-                .flag("-Wno-error")
-                .flag_if_supported("-Wno-unused-parameter")
-                .flag_if_supported(if env::var("SANITIZE").ok().as_deref() == Some("address") {
-                    "-fsanitize=address"
-                } else {
-                    ""
-                })
-                .flag_if_supported(if env::var("SANITIZE").ok().as_deref() == Some("address") {
-                    "-fno-omit-frame-pointer"
-                } else {
-                    ""
-                })
-                // Only include prebuilt (or built) headers, not local source tree headers
-                .include(&inc_primary)
-                .include(&inc_msgpack)
-                .include(&inc_tracy)
-                .file(&shim_src);
-            cc_build.compile("bb_rust_api");
-        } else {
-            panic!(
-                "libbb_rust_api.a not found in {} and fallback compilation disabled.",
-                bb_lib_dir.display()
-            );
-        }
+    if !shim_archive.exists() {
+        panic!(
+            "libbb_rust_api.a not found in {}. Provide a BB_LIB_DIR containing it, or enable local build fallback (BB_PREBUILT_ALLOW_BUILD_FALLBACK=1).",
+            bb_lib_dir.display()
+        );
     }
+    if using_downloaded_prebuilt {
+        println!(
+            "cargo:warning=Using downloaded prebuilt bb_rust_api from {}",
+            shim_archive.display()
+        );
+    } else {
+        println!(
+            "cargo:warning=Using local CMake-built bb_rust_api from {}",
+            shim_archive.display()
+        );
+    }
+    println!("cargo:rustc-link-lib=static=bb_rust_api");
 
     // Download CRS assets and generate the embedded module consumed via include_bytes!.
     ensure_crs_downloaded(&out_dir)
@@ -660,10 +590,6 @@ fn main() {
     println!("cargo:rustc-link-lib=static=crypto_schnorr");
     if is_linux {
         println!("cargo:rustc-link-arg=-Wl,--end-group");
-    }
-
-    if env::var("SANITIZE").ok().as_deref() == Some("address") {
-        println!("cargo:rustc-link-lib=asan");
     }
 
     // Math + pthread everywhere

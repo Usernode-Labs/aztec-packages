@@ -247,7 +247,8 @@ pub fn mega_honk_vk_hash(_vk: &[u8]) -> std::result::Result<[u8; 32], BbError> {
 }
 
 /// Derive the Mega wrapper VK used to recursive-verify an UltraZK proof and expose
-/// its scoped nullifier (last inner public input) as the sole outer public input.
+/// a Poseidon2 commitment to all inner UltraZK public inputs as the sole *semantic* outer public input
+/// (in addition to DefaultIO pairing-point public inputs used for recursive aggregation).
 pub fn mega_honk_vk_for_ultra_zk_leaf_wrapper(_vk: &[u8]) -> std::result::Result<Vk, VerifyError> {
     ensure_crs().map_err(|_| VerifyError::Internal)?;
     unsafe {
@@ -274,8 +275,9 @@ pub fn mega_honk_vk_for_ultra_zk_leaf_wrapper(_vk: &[u8]) -> std::result::Result
 ///
 /// The wrapper circuit enforces:
 /// - inner UltraZK proof verifies against `vk`,
-/// - inner scoped nullifier equals `expected_leaf_be32`,
-/// - outer proof exposes exactly that scoped nullifier as its public input.
+/// - Poseidon2(inner_public_inputs[]) equals `expected_leaf_be32`,
+/// - outer proof exposes exactly that commitment as its sole *semantic* public input
+///   (plus DefaultIO pairing-point public inputs for recursive aggregation).
 pub fn wrap_ultra_zk_as_mega_honk_leaf(
     _proof: &[u8],
     _vk: &[u8],
