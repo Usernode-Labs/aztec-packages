@@ -32,9 +32,19 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
     add_compile_options(-Wno-missing-field-initializers)
     add_compile_options(-Wno-deprecated-declarations)
 
-    if(CMAKE_CXX_COMPILER_VERSION VERSION_GREATER_EQUAL 18)
-        # We target clang20 and need this, eventually warning should be fixed or this will be unconditional.
-        add_compile_options(-Wno-vla-cxx-extension)
+    # We use VLAs in a few places; Clang warns about these and this project builds with -Werror.
+    # Disable the warning so iOS/macOS and Android NDK builds succeed across Clang versions.
+    include(CheckCXXCompilerFlag)
+    set(_bb_saved_required_flags "${CMAKE_REQUIRED_FLAGS}")
+    set(CMAKE_REQUIRED_FLAGS "${CMAKE_REQUIRED_FLAGS} -Werror=unknown-warning-option")
+    check_cxx_compiler_flag("-Wno-vla-cxx-extension" BB_HAS_WNO_VLA_CXX_EXTENSION)
+    check_cxx_compiler_flag("-Wno-vla-extension" BB_HAS_WNO_VLA_EXTENSION)
+    set(CMAKE_REQUIRED_FLAGS "${_bb_saved_required_flags}")
+    unset(_bb_saved_required_flags)
+    if(BB_HAS_WNO_VLA_CXX_EXTENSION)
+        add_compile_options($<$<COMPILE_LANGUAGE:CXX>:-Wno-vla-cxx-extension>)
+    elseif(BB_HAS_WNO_VLA_EXTENSION)
+        add_compile_options($<$<COMPILE_LANGUAGE:CXX>:-Wno-vla-extension>)
     endif()
 endif()
 

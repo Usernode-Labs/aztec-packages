@@ -14,13 +14,7 @@
 #include <memory>
 #include <random>
 #if defined(__APPLE__)
-#include <TargetConditionals.h>
-#if TARGET_OS_IPHONE || TARGET_IPHONE_SIMULATOR
-#include <unistd.h>
-extern "C" int getentropy(void* buffer, size_t length); // getentropy on iOS
-#else
-#include <sys/random.h> // getentropy on macOS
-#endif
+#include <stdlib.h> // arc4random_buf
 #elif defined(__ANDROID__)
 // Android API 24 doesn't have getrandom/getentropy, use /dev/urandom
 #include <fcntl.h>
@@ -90,11 +84,15 @@ template <size_t size_in_unsigned_ints> std::array<unsigned int, size_in_unsigne
         [[maybe_unused]] int eintr_retries = 0;
         // Sample until we fill the buffer
         while (bytes_left != 0) {
-#if defined(__wasm__) || defined(__APPLE__)
+#if defined(__wasm__)
             // Sample through a "syscall" on wasm. We can't request more than 256, it fails and results in an infinite
             // loop
             ssize_t read_bytes =
                 getentropy(current_offset, BYTES_PER_GETENTROPY_READ) == -1 ? -1 : BYTES_PER_GETENTROPY_READ;
+#elif defined(__APPLE__)
+            // iOS SDKs can be missing <sys/random.h>; arc4random_buf is available and CSPRNG-backed.
+            arc4random_buf(current_offset, BYTES_PER_GETENTROPY_READ);
+            ssize_t read_bytes = BYTES_PER_GETENTROPY_READ;
 #elif defined(__ANDROID__)
             // Android API 24 doesn't have getrandom/getentropy, read from /dev/urandom
             static thread_local int urandom_fd = -1;
