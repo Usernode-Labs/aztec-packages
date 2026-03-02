@@ -23,13 +23,27 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
     if(MEMORY_CHECKS)
         message(STATUS "Compiling with memory checks.")
         set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fsanitize=address")
-    endif()
-
-    if(CMAKE_CXX_COMPILER_VERSION VERSION_GREATER_EQUAL 18)
-        # We target clang20 and need this, eventually warning should be fixed or this will be unconditional.
-        add_compile_options(-Wno-vla-cxx-extension)
-        # This gets in the way of a partial object initialization (i.e. MyClass my_class{ .my_member = init_value })
-        add_compile_options(-Wno-missing-field-initializers)
+	    endif()
+	
+	    # We use VLAs in a few places; Clang warns about these and this project builds with -Werror.
+	    # Disable the warning (rather than dropping -Werror) so iOS/macOS + Android NDK builds succeed across Clang
+	    # versions.
+	    include(CheckCXXCompilerFlag)
+	    set(_bb_saved_required_flags "${CMAKE_REQUIRED_FLAGS}")
+	    set(CMAKE_REQUIRED_FLAGS "${CMAKE_REQUIRED_FLAGS} -Werror=unknown-warning-option")
+	    check_cxx_compiler_flag("-Wno-vla-cxx-extension" BB_HAS_WNO_VLA_CXX_EXTENSION)
+	    check_cxx_compiler_flag("-Wno-vla-extension" BB_HAS_WNO_VLA_EXTENSION)
+	    set(CMAKE_REQUIRED_FLAGS "${_bb_saved_required_flags}")
+	    unset(_bb_saved_required_flags)
+	    if(BB_HAS_WNO_VLA_CXX_EXTENSION)
+	        add_compile_options($<$<COMPILE_LANGUAGE:CXX>:-Wno-vla-cxx-extension>)
+	    elseif(BB_HAS_WNO_VLA_EXTENSION)
+	        add_compile_options($<$<COMPILE_LANGUAGE:CXX>:-Wno-vla-extension>)
+	    endif()
+	
+	    if(CMAKE_CXX_COMPILER_VERSION VERSION_GREATER_EQUAL 18)
+	        # This gets in the way of a partial object initialization (i.e. MyClass my_class{ .my_member = init_value })
+	        add_compile_options(-Wno-missing-field-initializers)
         # CLI11.hpp
         add_compile_options(-Wno-deprecated-declarations)
     endif()

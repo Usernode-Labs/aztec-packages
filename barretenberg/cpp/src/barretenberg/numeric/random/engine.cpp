@@ -10,7 +10,11 @@
 #include <cstring>
 #include <functional>
 #include <random>
+#if defined(__APPLE__)
+#include <stdlib.h> // arc4random_buf
+#else
 #include <sys/random.h>
+#endif
 
 namespace bb::numeric {
 
@@ -57,11 +61,15 @@ template <size_t size_in_unsigned_ints> std::array<unsigned int, size_in_unsigne
         uint8_t* current_offset = random_buffer_wrapper.buffer;
         // Sample until we fill the buffer
         while (bytes_left != 0) {
-#if defined(__wasm__) || defined(__APPLE__)
+#if defined(__wasm__)
             // Sample through a "syscall" on wasm. We can't request more than 256, it fails and results in an infinite
             // loop
             ssize_t read_bytes =
                 getentropy(current_offset, BYTES_PER_GETENTROPY_READ) == -1 ? -1 : BYTES_PER_GETENTROPY_READ;
+#elif defined(__APPLE__)
+            // iOS SDKs can be missing <sys/random.h>; arc4random_buf is available and CSPRNG-backed.
+            arc4random_buf(current_offset, BYTES_PER_GETENTROPY_READ);
+            ssize_t read_bytes = BYTES_PER_GETENTROPY_READ;
 #else
             // Sample from urandom on native
             auto read_bytes = getrandom(current_offset, bytes_left, 0);
