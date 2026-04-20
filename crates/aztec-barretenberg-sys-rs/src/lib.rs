@@ -70,6 +70,10 @@ extern "C" {
         out_len: *mut size_t,
     ) -> c_int;
 
+    pub fn bb_batch_merge_leaf_vk(out_ptr: *mut *mut u8, out_len: *mut size_t) -> c_int;
+
+    pub fn bb_batch_merge_agg_vk(out_ptr: *mut *mut u8, out_len: *mut size_t) -> c_int;
+
     pub fn bb_mh_vk_hash(vk: *const u8, vk_len: size_t, out_be32: *mut u8) -> c_int;
 
     pub fn bb_uhz_verify(
@@ -121,6 +125,21 @@ extern "C" {
         out_merged_proof_len: *mut size_t,
     ) -> c_int;
 
+    pub fn bb_batch_merge_leaf_with_vk(
+        proof_a: *const u8,
+        len_a: size_t,
+        vk_a: *const u8,
+        len_vk_a: size_t,
+        proof_b: *const u8,
+        len_b: size_t,
+        vk_b: *const u8,
+        len_vk_b: size_t,
+        out_merged_proof: *mut *mut u8,
+        out_merged_proof_len: *mut size_t,
+        out_merged_vk: *mut *mut u8,
+        out_merged_vk_len: *mut size_t,
+    ) -> c_int;
+
     pub fn bb_batch_merge_from_leaf_merges(
         proof_a: *const u8,
         len_a: size_t,
@@ -130,6 +149,17 @@ extern "C" {
         out_merged_proof_len: *mut size_t,
     ) -> c_int;
 
+    pub fn bb_batch_merge_from_leaf_merges_with_vk(
+        proof_a: *const u8,
+        len_a: size_t,
+        proof_b: *const u8,
+        len_b: size_t,
+        out_merged_proof: *mut *mut u8,
+        out_merged_proof_len: *mut size_t,
+        out_merged_vk: *mut *mut u8,
+        out_merged_vk_len: *mut size_t,
+    ) -> c_int;
+
     pub fn bb_batch_merge(
         proof_a: *const u8,
         len_a: size_t,
@@ -137,6 +167,17 @@ extern "C" {
         len_b: size_t,
         out_merged_proof: *mut *mut u8,
         out_merged_proof_len: *mut size_t,
+    ) -> c_int;
+
+    pub fn bb_batch_merge_with_vk(
+        proof_a: *const u8,
+        len_a: size_t,
+        proof_b: *const u8,
+        len_b: size_t,
+        out_merged_proof: *mut *mut u8,
+        out_merged_proof_len: *mut size_t,
+        out_merged_vk: *mut *mut u8,
+        out_merged_vk_len: *mut size_t,
     ) -> c_int;
 
     pub fn bb_schnorr_blake2s_sign(

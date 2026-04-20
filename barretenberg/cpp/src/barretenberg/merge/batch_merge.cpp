@@ -13,6 +13,10 @@
 
 namespace bb::batch_merge {
 
+static constexpr uint256_t BATCH_PARENT_HASH_TAG = 20;
+static constexpr uint256_t BATCH_INPUTS_ROOT_TAG = 21;
+static constexpr uint256_t BATCH_OUTPUTS_ROOT_TAG = 22;
+
 MergeResult merge(const std::vector<uint8_t>& proofA_fields_buf,
                   const std::vector<uint8_t>& vkA_bytes,
                   const std::vector<uint8_t>& proofB_fields_buf,
@@ -61,19 +65,48 @@ MergeResult merge(const std::vector<uint8_t>& proofA_fields_buf,
         if (vkB_native->num_public_inputs == 0 || proofB_fields_ff.empty()) {
             throw_or_abort("batch_merge: proof B has no public inputs");
         }
-        auto left_leaf = proofA_fields_ff[0];
-        auto right_leaf = proofB_fields_ff[0];
+        if (proofA_fields_ff.size() < 5 || proofB_fields_ff.size() < 5) {
+            throw_or_abort(
+                "batch_merge: expected child proofs to expose batch_root/inputs_root/outputs_root/input accumulators");
+        }
+        auto left_batch_root = proofA_fields_ff[0];
+        auto right_batch_root = proofB_fields_ff[0];
+        auto left_inputs_root = proofA_fields_ff[1];
+        auto right_inputs_root = proofB_fields_ff[1];
+        auto left_outputs_root = proofA_fields_ff[2];
+        auto right_outputs_root = proofB_fields_ff[2];
+        auto left_inputs_set_accumulator_a = proofA_fields_ff[3];
+        auto right_inputs_set_accumulator_a = proofB_fields_ff[3];
+        auto left_inputs_set_accumulator_b = proofA_fields_ff[4];
+        auto right_inputs_set_accumulator_b = proofB_fields_ff[4];
 
-        auto tag = RecFlavor::FF::from_witness(&builder, bb::fr(uint256_t(20)));
-        tag.unset_free_witness_tag();
-        auto parent = bb::stdlib::poseidon2<Builder>::hash(
-            std::vector<RecFlavor::FF>{ tag, left_leaf, right_leaf, vkA_hash_ff, vkB_hash_ff });
+        auto parent_tag = RecFlavor::FF::from_witness(&builder, bb::fr(BATCH_PARENT_HASH_TAG));
+        auto inputs_tag = RecFlavor::FF::from_witness(&builder, bb::fr(BATCH_INPUTS_ROOT_TAG));
+        auto outputs_tag = RecFlavor::FF::from_witness(&builder, bb::fr(BATCH_OUTPUTS_ROOT_TAG));
+        parent_tag.unset_free_witness_tag();
+        inputs_tag.unset_free_witness_tag();
+        outputs_tag.unset_free_witness_tag();
+        auto parent = bb::stdlib::poseidon2<Builder>::hash(std::vector<RecFlavor::FF>{
+            parent_tag, left_batch_root, right_batch_root, vkA_hash_ff, vkB_hash_ff
+        });
+        auto inputs_root = bb::stdlib::poseidon2<Builder>::hash(std::vector<RecFlavor::FF>{
+            inputs_tag, left_inputs_root, right_inputs_root
+        });
+        auto outputs_root = bb::stdlib::poseidon2<Builder>::hash(std::vector<RecFlavor::FF>{
+            outputs_tag, left_outputs_root, right_outputs_root
+        });
+        auto inputs_set_accumulator_a = left_inputs_set_accumulator_a + right_inputs_set_accumulator_a;
+        auto inputs_set_accumulator_b = left_inputs_set_accumulator_b + right_inputs_set_accumulator_b;
 
         parent.set_public();
+        inputs_root.set_public();
+        outputs_root.set_public();
+        inputs_set_accumulator_a.set_public();
+        inputs_set_accumulator_b.set_public();
         vkA_hash_ff.set_public();
         vkB_hash_ff.set_public();
-        left_leaf.set_public();
-        right_leaf.set_public();
+        left_batch_root.set_public();
+        right_batch_root.set_public();
 
         RecVerifier verifierA{ vkA_and_hash };
         RecVerifier verifierB{ vkB_and_hash };
