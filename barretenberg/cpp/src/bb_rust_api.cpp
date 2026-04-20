@@ -205,7 +205,8 @@ static int batch_merge_with_vks_internal(const uint8_t* proof_a,
                                           size_t len_b,
                                           const uint8_t* vk_b,
                                           size_t len_vk_b,
-                                          std::vector<uint8_t>& merged_proof_bytes)
+                                          std::vector<uint8_t>& merged_proof_bytes,
+                                          std::vector<uint8_t>* merged_vk_bytes = nullptr)
 {
     bb::HonkProof proof_a_checked;
     bb::HonkProof proof_b_checked;
@@ -236,6 +237,9 @@ static int batch_merge_with_vks_internal(const uint8_t* proof_a,
         std::vector<uint8_t> vkb(vk_b, vk_b + len_vk_b);
         auto res = bb::batch_merge::merge(pa, vka, pb, vkb);
         merged_proof_bytes = std::move(res.merged_proof_bytes);
+        if (merged_vk_bytes != nullptr) {
+            *merged_vk_bytes = std::move(res.merged_vk_bytes);
+        }
         return BB_STATUS_OK;
     } catch (const std::exception& e) {
         fprintf(stderr, "[bb][shim][ERR] batch_merge exception: %s\n", e.what());
@@ -424,7 +428,7 @@ static int bb_mh_verify_impl(const uint8_t* proof,
         bb::MegaVerifier verifier{ vk_and_hash };
         const size_t total_pub = static_cast<size_t>(vk_raw->num_public_inputs);
         const size_t default_pub = static_cast<size_t>(bb::DefaultIO::PUBLIC_INPUTS_SIZE);
-        static constexpr size_t BATCH_MERGE_BINDING_PUBLIC_INPUTS = 5;
+        static constexpr size_t BATCH_MERGE_BINDING_PUBLIC_INPUTS = 9;
         const size_t batch_merge_pub = BATCH_MERGE_BINDING_PUBLIC_INPUTS + default_pub;
         bool ok = false;
         // Guard against unsigned underflow in DefaultIO reconstruction.
@@ -536,6 +540,22 @@ int bb_batch_merge_public_inputs(const uint8_t* proof,
 {
     const auto& vk = bb::batch_merge::embedded_agg_merge_vk();
     return bb_mh_public_inputs(proof, proof_len, vk.data(), vk.size(), out_ptr, out_len);
+}
+
+int bb_batch_merge_leaf_vk(uint8_t** out_ptr, size_t* out_len)
+{
+    const auto& vk = bb::batch_merge::embedded_leaf_merge_vk();
+    if (out_ptr) *out_ptr = bb_malloc_copy(vk);
+    if (out_len) *out_len = vk.size();
+    return BB_STATUS_OK;
+}
+
+int bb_batch_merge_agg_vk(uint8_t** out_ptr, size_t* out_len)
+{
+    const auto& vk = bb::batch_merge::embedded_agg_merge_vk();
+    if (out_ptr) *out_ptr = bb_malloc_copy(vk);
+    if (out_len) *out_len = vk.size();
+    return BB_STATUS_OK;
 }
 
 // Compute Mega VK hash as a 32-byte big-endian field element.
@@ -868,6 +888,42 @@ int bb_batch_merge_leaf(const uint8_t* proof_a,
     return BB_STATUS_OK;
 }
 
+int bb_batch_merge_leaf_with_vk(const uint8_t* proof_a,
+                                size_t len_a,
+                                const uint8_t* vk_a,
+                                size_t len_vk_a,
+                                const uint8_t* proof_b,
+                                size_t len_b,
+                                const uint8_t* vk_b,
+                                size_t len_vk_b,
+                                uint8_t** out_merged_proof,
+                                size_t* out_merged_proof_len,
+                                uint8_t** out_merged_vk,
+                                size_t* out_merged_vk_len)
+{
+    std::vector<uint8_t> merged_proof_bytes;
+    std::vector<uint8_t> merged_vk_bytes;
+    const int status = batch_merge_with_vks_internal(proof_a,
+                                                     len_a,
+                                                     vk_a,
+                                                     len_vk_a,
+                                                     proof_b,
+                                                     len_b,
+                                                     vk_b,
+                                                     len_vk_b,
+                                                     merged_proof_bytes,
+                                                     &merged_vk_bytes);
+    if (status != BB_STATUS_OK) {
+        return status;
+    }
+
+    if (out_merged_proof) *out_merged_proof = bb_malloc_copy(merged_proof_bytes);
+    if (out_merged_proof_len) *out_merged_proof_len = merged_proof_bytes.size();
+    if (out_merged_vk) *out_merged_vk = bb_malloc_copy(merged_vk_bytes);
+    if (out_merged_vk_len) *out_merged_vk_len = merged_vk_bytes.size();
+    return BB_STATUS_OK;
+}
+
 int bb_batch_merge_from_leaf_merges(const uint8_t* proof_a,
                                     size_t len_a,
                                     const uint8_t* proof_b,
@@ -888,6 +944,40 @@ int bb_batch_merge_from_leaf_merges(const uint8_t* proof_a,
     return BB_STATUS_OK;
 }
 
+int bb_batch_merge_from_leaf_merges_with_vk(const uint8_t* proof_a,
+                                            size_t len_a,
+                                            const uint8_t* proof_b,
+                                            size_t len_b,
+                                            uint8_t** out_merged_proof,
+                                            size_t* out_merged_proof_len,
+                                            uint8_t** out_merged_vk,
+                                            size_t* out_merged_vk_len)
+{
+    const auto& child_vk = bb::batch_merge::embedded_leaf_merge_vk();
+    std::vector<uint8_t> merged_proof_bytes;
+    std::vector<uint8_t> merged_vk_bytes;
+    const int status =
+        batch_merge_with_vks_internal(proof_a,
+                                      len_a,
+                                      child_vk.data(),
+                                      child_vk.size(),
+                                      proof_b,
+                                      len_b,
+                                      child_vk.data(),
+                                      child_vk.size(),
+                                      merged_proof_bytes,
+                                      &merged_vk_bytes);
+    if (status != BB_STATUS_OK) {
+        return status;
+    }
+
+    if (out_merged_proof) *out_merged_proof = bb_malloc_copy(merged_proof_bytes);
+    if (out_merged_proof_len) *out_merged_proof_len = merged_proof_bytes.size();
+    if (out_merged_vk) *out_merged_vk = bb_malloc_copy(merged_vk_bytes);
+    if (out_merged_vk_len) *out_merged_vk_len = merged_vk_bytes.size();
+    return BB_STATUS_OK;
+}
+
 int bb_batch_merge(const uint8_t* proof_a,
                    size_t len_a,
                    const uint8_t* proof_b,
@@ -905,6 +995,40 @@ int bb_batch_merge(const uint8_t* proof_a,
 
     if (out_merged_proof) *out_merged_proof = bb_malloc_copy(merged_proof_bytes);
     if (out_merged_proof_len) *out_merged_proof_len = merged_proof_bytes.size();
+    return BB_STATUS_OK;
+}
+
+int bb_batch_merge_with_vk(const uint8_t* proof_a,
+                           size_t len_a,
+                           const uint8_t* proof_b,
+                           size_t len_b,
+                           uint8_t** out_merged_proof,
+                           size_t* out_merged_proof_len,
+                           uint8_t** out_merged_vk,
+                           size_t* out_merged_vk_len)
+{
+    const auto& child_vk = bb::batch_merge::embedded_agg_merge_vk();
+    std::vector<uint8_t> merged_proof_bytes;
+    std::vector<uint8_t> merged_vk_bytes;
+    const int status =
+        batch_merge_with_vks_internal(proof_a,
+                                      len_a,
+                                      child_vk.data(),
+                                      child_vk.size(),
+                                      proof_b,
+                                      len_b,
+                                      child_vk.data(),
+                                      child_vk.size(),
+                                      merged_proof_bytes,
+                                      &merged_vk_bytes);
+    if (status != BB_STATUS_OK) {
+        return status;
+    }
+
+    if (out_merged_proof) *out_merged_proof = bb_malloc_copy(merged_proof_bytes);
+    if (out_merged_proof_len) *out_merged_proof_len = merged_proof_bytes.size();
+    if (out_merged_vk) *out_merged_vk = bb_malloc_copy(merged_vk_bytes);
+    if (out_merged_vk_len) *out_merged_vk_len = merged_vk_bytes.size();
     return BB_STATUS_OK;
 }
 
