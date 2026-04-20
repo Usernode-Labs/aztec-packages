@@ -26,6 +26,12 @@ fn run(mut cmd: Command) {
     }
 }
 
+fn read_text(path: &Path) -> String {
+    fs::read_to_string(path).unwrap_or_else(|err| {
+        panic!("failed to read {}: {}", path.display(), err);
+    })
+}
+
 fn repo_root() -> PathBuf {
     // crates/aztec-barretenberg-sys-rs -> crates -> repo root
     PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap())
@@ -84,7 +90,45 @@ fn infer_llvm_tool_from_compiler(compiler: &str, tool_name: &str) -> Option<Stri
 }
 
 fn built_lib_present(lib_dir: &Path) -> bool {
-    lib_dir.join("libbarretenberg.a").exists()
+    lib_dir.join("libbarretenberg.a").exists() && lib_dir.join("libbb_rust_api.a").exists()
+}
+
+fn relwithdebinfo_flags(language: &str) -> &'static str {
+    match language {
+        "C" | "CXX" => "-O2 -g -DNDEBUG",
+        _ => panic!(
+            "unsupported language for RelWithDebInfo flags: {}",
+            language
+        ),
+    }
+}
+
+fn validate_relwithdebinfo_flags(build_dir: &Path) {
+    let cache_path = build_dir.join("CMakeCache.txt");
+    let cache = read_text(&cache_path);
+
+    for (var, expected) in [
+        ("CMAKE_C_FLAGS_RELWITHDEBINFO", relwithdebinfo_flags("C")),
+        (
+            "CMAKE_CXX_FLAGS_RELWITHDEBINFO",
+            relwithdebinfo_flags("CXX"),
+        ),
+    ] {
+        let prefix = format!("{var}:STRING=");
+        let actual = cache
+            .lines()
+            .find_map(|line| line.strip_prefix(&prefix))
+            .unwrap_or_else(|| panic!("missing {} in {}", var, cache_path.display()));
+        if actual != expected {
+            panic!(
+                "{} in {} was {:?}, expected {:?}",
+                var,
+                cache_path.display(),
+                actual,
+                expected
+            );
+        }
+    }
 }
 
 fn target_triple() -> String {
@@ -211,9 +255,7 @@ fn fetch_prebuilt(version_tag: &str, target: &str) -> io::Result<Prebuilt> {
     let cache_root = prebuilt_cache_dir().join(version_tag).join(target);
     let lib_dir = cache_root.join("lib");
     if lib_dir.join("libbarretenberg.a").exists() {
-        return Ok(Prebuilt {
-            lib: lib_dir,
-        });
+        return Ok(Prebuilt { lib: lib_dir });
     }
 
     fs::create_dir_all(&cache_root)?;
@@ -228,9 +270,7 @@ fn fetch_prebuilt(version_tag: &str, target: &str) -> io::Result<Prebuilt> {
     // We rely on TLS + release hygiene. Advanced users can pin/verify externally.
 
     extract_tar_gz(&archive_path, &cache_root)?;
-    let pb = Prebuilt {
-        lib: lib_dir,
-    };
+    let pb = Prebuilt { lib: lib_dir };
     if !pb.lib.join("libbarretenberg.a").exists() {
         return Err(io::Error::new(
             io::ErrorKind::Other,
@@ -365,7 +405,20 @@ fn ensure_barretenberg_built(build_dir: &Path) {
         .arg("-B")
         .arg(build_dir)
         .arg("-DCMAKE_BUILD_TYPE=RelWithDebInfo")
-        .arg("-DTARGET_ARCH=skylake");
+        .arg(format!(
+            "-DCMAKE_C_FLAGS_RELWITHDEBINFO={}",
+            relwithdebinfo_flags("C")
+        ))
+        .arg(format!(
+            "-DCMAKE_CXX_FLAGS_RELWITHDEBINFO={}",
+            relwithdebinfo_flags("CXX")
+        ))
+        .arg("-DCMAKE_POSITION_INDEPENDENT_CODE=ON")
+        .arg("-DDISABLE_AZTEC_VM=ON")
+        .arg("-DENABLE_TRACY=OFF")
+        .arg("-DBB_BUILD_TRANSLATOR_VM=ON")
+        .arg("-DBB_ENABLE_BENCH=OFF")
+        .arg("-DBB_ENABLE_TESTS=OFF");
 
     // Honor CC/CXX if set by forwarding to CMake to avoid cached compiler choices
     if let Ok(cc) = env::var("CC") {
@@ -405,6 +458,7 @@ fn ensure_barretenberg_built(build_dir: &Path) {
         cfg.arg("-GNinja");
     }
     run(cfg);
+    validate_relwithdebinfo_flags(build_dir);
 
     println!(
         "cargo:warning=Building Barretenberg targets (bb, bb_rust_api, crypto_schnorr)
@@ -463,11 +517,11 @@ fn main() {
     let use_prebuilt = env::var("BB_USE_PREBUILT")
         .ok()
         .map(|s| s == "1" || s.eq_ignore_ascii_case("true"))
-        .unwrap_or(true);
+        .unwrap_or(false);
     let allow_fallback = env::var("BB_PREBUILT_ALLOW_BUILD_FALLBACK")
         .ok()
         .map(|s| s == "1" || s.eq_ignore_ascii_case("true"))
-        .unwrap_or(false);
+        .unwrap_or(true);
 
     let bb_build_dir = env_bb_build.clone().unwrap_or_else(|| {
         build_dir_for_compilers(&repo_root, env_cc.as_deref(), env_cxx.as_deref())
@@ -522,8 +576,18 @@ fn main() {
         }
     }
 
-    // If still no libs present, optionally build locally
-    if !built_lib_present(&bb_lib_dir) {
+    let use_local_build = env_bb_lib.is_none() && !using_downloaded_prebuilt;
+
+    // When this crate owns the local BB build, always re-run configure+build so stale
+    // CMake caches cannot silently drop RelWithDebInfo optimization flags.
+    if use_local_build {
+        println!(
+            "cargo:warning=Ensuring local Barretenberg build at {}",
+            bb_build_dir.display()
+        );
+        ensure_barretenberg_built(&bb_build_dir);
+        bb_lib_dir = bb_build_dir.join("lib");
+    } else if !built_lib_present(&bb_lib_dir) {
         if allow_fallback {
             println!(
                 "cargo:warning=Barretenberg libs not found at {}; building locally…",
