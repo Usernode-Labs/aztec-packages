@@ -428,7 +428,7 @@ static int bb_mh_verify_impl(const uint8_t* proof,
         bb::MegaVerifier verifier{ vk_and_hash };
         const size_t total_pub = static_cast<size_t>(vk_raw->num_public_inputs);
         const size_t default_pub = static_cast<size_t>(bb::DefaultIO::PUBLIC_INPUTS_SIZE);
-        static constexpr size_t BATCH_MERGE_BINDING_PUBLIC_INPUTS = 9;
+        static constexpr size_t BATCH_MERGE_BINDING_PUBLIC_INPUTS = 12;
         const size_t batch_merge_pub = BATCH_MERGE_BINDING_PUBLIC_INPUTS + default_pub;
         bool ok = false;
         // Guard against unsigned underflow in DefaultIO reconstruction.
