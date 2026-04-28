@@ -10,6 +10,7 @@
 #include "barretenberg/ultra_honk/ultra_verifier.hpp"
 #include "batch_merge_embedded_vks.hpp"
 #include <stdexcept>
+#include <string>
 
 namespace bb::batch_merge {
 
@@ -79,6 +80,30 @@ MergeResult merge(const std::vector<uint8_t>& proofA_fields_buf,
         auto right_inputs_set_accumulator_a = proofB_fields_ff[3];
         auto left_inputs_set_accumulator_b = proofA_fields_ff[4];
         auto right_inputs_set_accumulator_b = proofB_fields_ff[4];
+        static constexpr size_t DEFAULT_PUBLIC_INPUTS = bb::DefaultIO::PUBLIC_INPUTS_SIZE;
+        auto one_count = [&]() {
+            auto count = RecFlavor::FF::from_witness(&builder, bb::fr(1));
+            count.unset_free_witness_tag();
+            return count;
+        };
+        auto child_count = [&](const std::vector<typename RecFlavor::FF>& proof_fields_ff,
+                               const std::shared_ptr<NativeVK>& child_vk,
+                               const char* label) {
+            const size_t total_public_inputs = static_cast<size_t>(child_vk->num_public_inputs);
+            const size_t semantic_public_inputs = total_public_inputs > DEFAULT_PUBLIC_INPUTS
+                                                      ? total_public_inputs - DEFAULT_PUBLIC_INPUTS
+                                                      : total_public_inputs;
+            if (semantic_public_inputs <= 5) {
+                return one_count();
+            }
+            if (proof_fields_ff.size() < 6) {
+                throw_or_abort(std::string("batch_merge: merge child proof ") + label + " has no count public input");
+            }
+            return proof_fields_ff[5];
+        };
+        auto left_count = child_count(proofA_fields_ff, vkA_native, "A");
+        auto right_count = child_count(proofB_fields_ff, vkB_native, "B");
+        auto parent_count = left_count + right_count;
 
         auto parent_tag = RecFlavor::FF::from_witness(&builder, bb::fr(BATCH_PARENT_HASH_TAG));
         auto inputs_tag = RecFlavor::FF::from_witness(&builder, bb::fr(BATCH_INPUTS_ROOT_TAG));
@@ -87,7 +112,7 @@ MergeResult merge(const std::vector<uint8_t>& proofA_fields_buf,
         inputs_tag.unset_free_witness_tag();
         outputs_tag.unset_free_witness_tag();
         auto parent = bb::stdlib::poseidon2<Builder>::hash(std::vector<RecFlavor::FF>{
-            parent_tag, left_batch_root, right_batch_root, vkA_hash_ff, vkB_hash_ff
+            parent_tag, left_batch_root, right_batch_root, vkA_hash_ff, vkB_hash_ff, left_count, right_count
         });
         auto inputs_root = bb::stdlib::poseidon2<Builder>::hash(std::vector<RecFlavor::FF>{
             inputs_tag, left_inputs_root, right_inputs_root
@@ -103,10 +128,13 @@ MergeResult merge(const std::vector<uint8_t>& proofA_fields_buf,
         outputs_root.set_public();
         inputs_set_accumulator_a.set_public();
         inputs_set_accumulator_b.set_public();
+        parent_count.set_public();
         vkA_hash_ff.set_public();
         vkB_hash_ff.set_public();
         left_batch_root.set_public();
         right_batch_root.set_public();
+        left_count.set_public();
+        right_count.set_public();
 
         RecVerifier verifierA{ vkA_and_hash };
         RecVerifier verifierB{ vkB_and_hash };
