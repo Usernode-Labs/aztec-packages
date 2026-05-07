@@ -121,7 +121,7 @@ template <typename Fr> EvaluationDomain<Fr>::~EvaluationDomain() {}
 template <typename Fr> void EvaluationDomain<Fr>::compute_lookup_table()
 {
     BB_ASSERT_EQ(roots, nullptr);
-    roots = std::make_shared<Fr[]>(size * 2);
+    roots = std::shared_ptr<Fr[]>(new Fr[size * 2], [](Fr* ptr) { delete[] ptr; });
     compute_lookup_table_single(root, size, roots.get(), round_roots);
     compute_lookup_table_single(root_inverse, size, &roots.get()[size], inverse_round_roots);
 }

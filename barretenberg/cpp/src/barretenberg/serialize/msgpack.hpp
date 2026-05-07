@@ -126,8 +126,8 @@ to the object itself, do break up the above to keep a reference to the handle, f
 
 namespace msgpack_detail {
 
-// A constexpr function to convert a snake_case string to a camelCase string.
-inline constexpr std::string camel_case(std::string_view name)
+// Convert a snake_case string to a camelCase string.
+inline std::string camel_case(std::string_view name)
 {
     std::string result;
     bool to_upper = false;

@@ -161,7 +161,11 @@ template <class Params_> struct alignas(32) field {
         self_to_montgomery_form();
     }
 
-    constexpr explicit field(std::string input) noexcept
+    template <size_t N> constexpr explicit field(const char (&input)[N]) noexcept
+        : field(uint256_t(input))
+    {}
+
+    explicit field(std::string input) noexcept
     {
         uint256_t value(input);
         *this = field(value);

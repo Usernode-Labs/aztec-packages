@@ -26,6 +26,8 @@
 #include <iomanip>
 #include <iostream>
 #include <sstream>
+#include <string>
+#include <string_view>
 
 namespace bb::numeric {
 
@@ -63,9 +65,9 @@ class alignas(32) uint256_t {
     {}
     constexpr uint256_t(uint256_t&& other) noexcept = default;
 
-    explicit constexpr uint256_t(const std::string& input)
+    explicit constexpr uint256_t(std::string_view input) noexcept
     {
-        /* Quick and dirty conversion from a single character to its hex equivelent */
+        /* Quick and dirty conversion from a single character to its hex equivalent */
         constexpr auto HexCharToInt = [](uint8_t Input) {
             bool valid =
                 (Input >= 'a' && Input <= 'f') || (Input >= 'A' && Input <= 'F') || (Input >= '0' && Input <= '9');
@@ -104,6 +106,14 @@ class alignas(32) uint256_t {
         data[2] = limbs[1];
         data[3] = limbs[0];
     }
+
+    template <size_t N> explicit constexpr uint256_t(const char (&input)[N]) noexcept
+        : uint256_t(std::string_view(input, N - 1))
+    {}
+
+    explicit uint256_t(const std::string& input) noexcept
+        : uint256_t(std::string_view(input))
+    {}
 
     constexpr uint256_t& operator=(const uint256_t& other) noexcept = default;
     constexpr uint256_t& operator=(uint256_t&& other) noexcept = default;

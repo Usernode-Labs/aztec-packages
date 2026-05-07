@@ -452,7 +452,7 @@ void add_scaled_batch(Polynomial<Fr>& dst,
 template <typename Fr> std::shared_ptr<Fr[]> _allocate_aligned_memory(size_t n_elements)
 {
     // NOLINTNEXTLINE(cppcoreguidelines-avoid-c-arrays)
-    return std::make_shared<Fr[]>(n_elements);
+    return std::shared_ptr<Fr[]>(new Fr[n_elements], [](Fr* ptr) { delete[] ptr; });
 }
 
 /**
