@@ -31,10 +31,13 @@
 #include "barretenberg/crypto/poseidon2/poseidon2_params.hpp"
 #include "barretenberg/crypto/poseidon2/poseidon2.hpp"
 #include "barretenberg/stdlib/hash/poseidon2/poseidon2.hpp"
+#include "barretenberg/ecc/curves/bn254/g1.hpp"
+#include "barretenberg/ecc/curves/bn254/g2.hpp"
 #include "barretenberg/ecc/curves/grumpkin/grumpkin.hpp"
 #include "barretenberg/crypto/schnorr/schnorr.hpp"
 #include "barretenberg/crypto/schnorr/schnorr.tcc"
 #include "barretenberg/crypto/blake2s/blake2s.hpp"
+#include "barretenberg/srs/global_crs.hpp"
 
 using ::to_buffer;
 using ::from_buffer;
@@ -263,6 +266,30 @@ static int batch_merge_with_child_vk_internal(const uint8_t* proof_a,
 } // namespace
 
 extern "C" {
+
+void srs_init_srs(const uint8_t* points_buf, const uint32_t* num_points_be, const uint8_t* g2_point_buf)
+{
+    const auto* num_points_bytes = reinterpret_cast<const uint8_t*>(num_points_be);
+    const uint32_t num_points = read_be_u32(num_points_bytes);
+    std::vector<bb::g1::affine_element> g1_points(num_points);
+    for (uint32_t i = 0; i < num_points; ++i) {
+        g1_points[i] = from_buffer<bb::g1::affine_element>(points_buf, static_cast<size_t>(i) * 64);
+    }
+    const auto g2_point = from_buffer<bb::g2::affine_element>(g2_point_buf);
+    bb::srs::init_bn254_mem_crs_factory(g1_points, g2_point);
+}
+
+void srs_init_grumpkin_srs(const uint8_t* points_buf, const uint32_t* num_points_be)
+{
+    const auto* num_points_bytes = reinterpret_cast<const uint8_t*>(num_points_be);
+    const uint32_t num_points = read_be_u32(num_points_bytes);
+    std::vector<bb::curve::Grumpkin::AffineElement> points(num_points);
+    for (uint32_t i = 0; i < num_points; ++i) {
+        points[i] = from_buffer<bb::curve::Grumpkin::AffineElement>(
+            points_buf, static_cast<size_t>(i) * sizeof(bb::curve::Grumpkin::AffineElement));
+    }
+    bb::srs::init_grumpkin_mem_crs_factory(points);
+}
 
 // Forward declare helper for BN254 fr -> 32-byte big-endian used by multiple shims below
 static inline std::vector<uint8_t> fr_to_be32(const bb::fr& a);

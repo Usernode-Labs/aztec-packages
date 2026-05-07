@@ -3,8 +3,7 @@
 
 use libc::{c_int, size_t};
 
-// Low-level FFI to the C++ shim. These symbols will be provided by the
-// future `bb_rust_api` static library built via build.rs + CMake.
+// Low-level FFI to the C++ shim provided by the `bb_rust_api` static library.
 
 pub mod crs_embedded {
     include!(concat!(env!("OUT_DIR"), "/crs_embedded.rs"));
