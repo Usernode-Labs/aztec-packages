@@ -23,7 +23,7 @@ template <typename Fr> std::shared_ptr<Fr[]> get_scratch_space(const size_t num_
     static std::shared_ptr<Fr[]> working_memory = nullptr;
     static size_t current_size = 0;
     if (num_elements > current_size) {
-        working_memory = std::make_shared<Fr[]>(num_elements);
+        working_memory = std::shared_ptr<Fr[]>(new Fr[num_elements], [](Fr* ptr) { delete[] ptr; });
         current_size = num_elements;
     }
     return working_memory;

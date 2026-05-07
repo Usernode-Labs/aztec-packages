@@ -32,6 +32,7 @@ using namespace bb;
 template <class... Ts> struct overloaded : Ts... {
     using Ts::operator()...;
 };
+template <class... Ts> overloaded(Ts...) -> overloaded<Ts...>;
 
 bb::fr from_buffer_with_bound_checks(const std::vector<uint8_t>& buffer)
 {
