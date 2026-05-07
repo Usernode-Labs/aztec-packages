@@ -14,7 +14,7 @@
 #include "barretenberg/dsl/acir_format/acir_format.hpp"
 #include "barretenberg/dsl/acir_format/acir_to_constraint_buf.hpp"
 #include "barretenberg/merge/batch_merge.hpp"
-#include "barretenberg/ultra_honk/decider_proving_key.hpp"
+#include "barretenberg/ultra_honk/prover_instance.hpp"
 #include "barretenberg/stdlib_circuit_builders/mega_circuit_builder.hpp"
 #include "barretenberg/honk/proof_system/types/proof.hpp"
 #include "barretenberg/ultra_honk/ultra_prover.hpp"
@@ -22,7 +22,6 @@
 #include "barretenberg/flavor/ultra_zk_recursive_flavor.hpp"
 #include "barretenberg/stdlib/special_public_inputs/special_public_inputs.hpp"
 #include "barretenberg/special_public_inputs/special_public_inputs.hpp"
-#include "barretenberg/stdlib/honk_verifier/oink_recursive_verifier.hpp"
 #include "barretenberg/flavor/mega_recursive_flavor.hpp"
 #include "barretenberg/stdlib_circuit_builders/mega_circuit_builder.hpp"
 #include "barretenberg/ultra_honk/ultra_verifier.hpp"
@@ -283,14 +282,14 @@ int bb_mega_honk_vk_from_acir(const uint8_t* acir, size_t acir_len, uint8_t** ou
 {
     try {
         std::vector<uint8_t> acir_vec(acir, acir + acir_len);
-        const acir_format::ProgramMetadata metadata{ .honk_recursion = 1 };
-        acir_format::AcirProgram program{ acir_format::circuit_buf_to_acir_format(std::move(acir_vec)) };
+        const acir_format::ProgramMetadata metadata{};
+        acir_format::AcirProgram program{ acir_format::circuit_buf_to_acir_format(std::move(acir_vec)), {} };
         auto builder = acir_format::create_circuit<bb::MegaCircuitBuilder>(program, metadata);
 
-        using DeciderProvingKey = bb::DeciderProvingKey_<bb::MegaFlavor>;
+        using ProverInstance = bb::ProverInstance_<bb::MegaFlavor>;
         using VerificationKey = bb::MegaFlavor::VerificationKey;
-        DeciderProvingKey proving_key(builder);
-        VerificationKey vk(proving_key.get_precomputed());
+        ProverInstance prover_instance(builder);
+        VerificationKey vk(prover_instance.get_precomputed());
         auto buf = to_buffer(vk);
         if (out_vk) *out_vk = bb_malloc_copy(buf);
         if (out_vk_len) *out_vk_len = buf.size();
@@ -316,15 +315,15 @@ int bb_mh_prove(const uint8_t* acir,
     try {
         std::vector<uint8_t> acir_vec(acir, acir + acir_len);
         std::vector<uint8_t> wit_vec(witness, witness + witness_len);
-        const acir_format::ProgramMetadata metadata{ .honk_recursion = 1 };
+        const acir_format::ProgramMetadata metadata{};
         acir_format::AcirProgram program{ acir_format::circuit_buf_to_acir_format(std::move(acir_vec)),
-                                          acir_format::witness_buf_to_witness_data(std::move(wit_vec)) };
+                                          acir_format::witness_buf_to_witness_vector(std::move(wit_vec)) };
         auto builder = acir_format::create_circuit<bb::MegaCircuitBuilder>(program, metadata);
-        using DeciderProvingKey = bb::DeciderProvingKey_<bb::MegaFlavor>;
+        using ProverInstance = bb::ProverInstance_<bb::MegaFlavor>;
         using VerificationKey = bb::MegaFlavor::VerificationKey;
-        auto proving_key = std::make_shared<DeciderProvingKey>(builder);
-        auto verification_key = std::make_shared<VerificationKey>(proving_key->get_precomputed());
-        bb::UltraProver_<bb::MegaFlavor> prover{ proving_key, verification_key };
+        auto prover_instance = std::make_shared<ProverInstance>(builder);
+        auto verification_key = std::make_shared<VerificationKey>(prover_instance->get_precomputed());
+        bb::UltraProver_<bb::MegaFlavor> prover{ prover_instance, verification_key };
         auto proof = prover.construct_proof();
         auto proof_buf = to_buffer<true>(proof);
         auto vk_buf = to_buffer(*verification_key);
@@ -370,7 +369,8 @@ static int bb_mh_verify_impl(const uint8_t* proof,
             return BB_STATUS_MALFORMED_VK;
         }
         auto verification_key = std::make_shared<bb::MegaFlavor::VerificationKey>(*vk_raw);
-        bb::MegaVerifier verifier{ verification_key };
+        auto vk_and_hash = std::make_shared<bb::MegaFlavor::VKAndHash>(verification_key);
+        bb::MegaVerifier verifier{ vk_and_hash };
         const size_t total_pub = static_cast<size_t>(vk_raw->num_public_inputs);
         const size_t default_pub = static_cast<size_t>(bb::DefaultIO::PUBLIC_INPUTS_SIZE);
         static constexpr size_t BATCH_MERGE_BINDING_PUBLIC_INPUTS = 5;
@@ -383,7 +383,7 @@ static int bb_mh_verify_impl(const uint8_t* proof,
         if (verify_batch_merge_layout && total_pub != batch_merge_pub) {
             return BB_STATUS_WRONG_PROOF_TYPE;
         }
-        ok = verifier.template verify_proof<bb::DefaultIO>(proof_obj).result;
+        ok = verifier.verify_proof(proof_obj).result;
         if (out_ok) {
             *out_ok = ok;
         }
@@ -538,8 +538,9 @@ int bb_uhz_verify(const uint8_t* proof,
             return BB_STATUS_MALFORMED_VK;
         }
         auto verification_key = std::make_shared<bb::UltraZKFlavor::VerificationKey>(*vk_raw);
-        bb::UltraVerifier_<bb::UltraZKFlavor> verifier{ verification_key };
-        const bool ok = verifier.template verify_proof<bb::DefaultIO>(proof_obj).result;
+        auto vk_and_hash = std::make_shared<bb::UltraZKFlavor::VKAndHash>(verification_key);
+        bb::UltraZKVerifier verifier{ vk_and_hash };
+        const bool ok = verifier.verify_proof(proof_obj).result;
         if (out_ok) {
             *out_ok = ok;
         }
@@ -608,9 +609,9 @@ int bb_uhz_leaf_vk(const uint8_t* vk, size_t vk_len, uint8_t** out_vk, size_t* o
     try {
         using Builder = bb::MegaCircuitBuilder;
         using RecFlavor = bb::UltraZKRecursiveFlavor_<Builder>;
-        using RecVerifier = bb::stdlib::recursion::honk::UltraRecursiveVerifier_<RecFlavor>;
-        using StdlibOink = bb::stdlib::recursion::honk::OinkRecursiveVerifier_<RecFlavor>;
         using MockIO = bb::stdlib::recursion::honk::DefaultIO<Builder>;
+        using RecVerifier = bb::UltraVerifier_<RecFlavor, MockIO>;
+        using ProverInstance = bb::ProverInstance_<bb::MegaFlavor>;
 
         Builder builder;
         if (!vk_native.has_value()) {
@@ -637,20 +638,17 @@ int bb_uhz_leaf_vk(const uint8_t* vk, size_t vk_len, uint8_t** out_vk, size_t* o
             proof_fields_ff.emplace_back(RecFlavor::FF::from_witness(&builder, field));
         }
 
-        RecVerifier rec_for_oink{ &builder, vk_and_hash };
-        StdlibOink oink_parse{ &builder, rec_for_oink.key };
-        oink_parse.verify_proof(proof_fields_ff);
-        if (rec_for_oink.key->public_inputs.empty()) {
+        RecVerifier verifier{ vk_and_hash };
+        typename RecVerifier::Proof stdlib_proof(proof_fields_ff);
+        auto output = verifier.verify_proof(stdlib_proof);
+        const auto& public_inputs = verifier.get_public_inputs();
+        if (public_inputs.empty()) {
             return BB_STATUS_MALFORMED_VK;
         }
         // Semantic leaf statement: a single commitment to all UltraZK public inputs.
         // Downstream aggregation expects one semantic public input plus DefaultIO pairing points.
-        auto leaf_commitment = bb::stdlib::poseidon2<Builder>::hash(rec_for_oink.key->public_inputs);
+        auto leaf_commitment = bb::stdlib::poseidon2<Builder>::hash(public_inputs);
         leaf_commitment.set_public();
-
-        RecVerifier verifier{ &builder, vk_and_hash };
-        typename RecVerifier::StdlibProof stdlib_proof(proof_fields_ff);
-        auto output = verifier.template verify_proof<MockIO>(stdlib_proof);
 
         // Propagate the recursion accumulator (pairing points) as DefaultIO public inputs,
         // so the wrapped Mega proof is compatible with downstream recursive aggregation.
@@ -659,8 +657,8 @@ int bb_uhz_leaf_vk(const uint8_t* vk, size_t vk_len, uint8_t** out_vk, size_t* o
         out_io.set_public();
 
         builder.finalize_circuit(true);
-        auto pk = std::make_shared<bb::DeciderProvingKey_<bb::MegaFlavor>>(builder);
-        auto wrapped_vk = std::make_shared<bb::MegaFlavor::VerificationKey>(pk->get_precomputed());
+        auto prover_instance = std::make_shared<ProverInstance>(builder);
+        auto wrapped_vk = std::make_shared<bb::MegaFlavor::VerificationKey>(prover_instance->get_precomputed());
         auto wrapped_vk_bytes = to_buffer(*wrapped_vk);
         if (out_vk) {
             *out_vk = bb_malloc_copy(wrapped_vk_bytes);
@@ -711,9 +709,9 @@ int bb_uhz_leaf_wrap(const uint8_t* proof,
     try {
         using Builder = bb::MegaCircuitBuilder;
         using RecFlavor = bb::UltraZKRecursiveFlavor_<Builder>;
-        using RecVerifier = bb::stdlib::recursion::honk::UltraRecursiveVerifier_<RecFlavor>;
-        using StdlibOink = bb::stdlib::recursion::honk::OinkRecursiveVerifier_<RecFlavor>;
         using OutIO = bb::stdlib::recursion::honk::DefaultIO<Builder>;
+        using RecVerifier = bb::UltraVerifier_<RecFlavor, OutIO>;
+        using ProverInstance = bb::ProverInstance_<bb::MegaFlavor>;
 
         Builder builder;
         if (!vk_native.has_value()) {
@@ -730,21 +728,18 @@ int bb_uhz_leaf_wrap(const uint8_t* proof,
             proof_fields_ff.emplace_back(RecFlavor::FF::from_witness(&builder, field));
         }
 
-        RecVerifier rec_for_oink{ &builder, vk_and_hash };
-        StdlibOink oink_parse{ &builder, rec_for_oink.key };
-        oink_parse.verify_proof(proof_fields_ff);
-        if (rec_for_oink.key->public_inputs.empty()) {
+        RecVerifier verifier{ vk_and_hash };
+        typename RecVerifier::Proof stdlib_proof(proof_fields_ff);
+        auto output = verifier.verify_proof(stdlib_proof);
+        const auto& public_inputs = verifier.get_public_inputs();
+        if (public_inputs.empty()) {
             return BB_STATUS_MALFORMED_PROOF;
         }
         auto expected_leaf_native = fr_from_be32(expected_leaf_be32);
         auto expected_leaf_ff = RecFlavor::FF::from_witness(&builder, expected_leaf_native);
-        auto leaf_commitment = bb::stdlib::poseidon2<Builder>::hash(rec_for_oink.key->public_inputs);
+        auto leaf_commitment = bb::stdlib::poseidon2<Builder>::hash(public_inputs);
         leaf_commitment.assert_equal(expected_leaf_ff);
         leaf_commitment.set_public();
-
-        RecVerifier verifier{ &builder, vk_and_hash };
-        typename RecVerifier::StdlibProof stdlib_proof(proof_fields_ff);
-        auto output = verifier.template verify_proof<OutIO>(stdlib_proof);
 
         // Propagate the recursion accumulator (pairing points) as DefaultIO public inputs,
         // so the wrapped Mega proof is compatible with downstream recursive aggregation.
@@ -753,9 +748,9 @@ int bb_uhz_leaf_wrap(const uint8_t* proof,
         out_io.set_public();
 
         builder.finalize_circuit(true);
-        auto pk = std::make_shared<bb::DeciderProvingKey_<bb::MegaFlavor>>(builder);
-        auto wrapped_vk = std::make_shared<bb::MegaFlavor::VerificationKey>(pk->get_precomputed());
-        bb::UltraProver_<bb::MegaFlavor> prover{ pk, wrapped_vk };
+        auto prover_instance = std::make_shared<ProverInstance>(builder);
+        auto wrapped_vk = std::make_shared<bb::MegaFlavor::VerificationKey>(prover_instance->get_precomputed());
+        bb::UltraProver_<bb::MegaFlavor> prover{ prover_instance, wrapped_vk };
         auto wrapped_proof = prover.construct_proof();
 
         auto wrapped_proof_bytes = to_buffer<true>(wrapped_proof);
