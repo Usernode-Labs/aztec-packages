@@ -228,7 +228,13 @@ fn extract_tar_gz(archive: &Path, dest: &Path) -> io::Result<()> {
 }
 
 struct Prebuilt {
+    root: PathBuf,
     lib: PathBuf,
+}
+
+struct IncludePaths {
+    include: PathBuf,
+    msgpack: PathBuf,
 }
 
 fn prebuilt_cache_dir() -> PathBuf {
@@ -254,8 +260,11 @@ fn fetch_prebuilt(version_tag: &str, target: &str) -> io::Result<Prebuilt> {
     let base_url = default_base_url();
     let cache_root = prebuilt_cache_dir().join(version_tag).join(target);
     let lib_dir = cache_root.join("lib");
-    if built_lib_present(&lib_dir) {
-        return Ok(Prebuilt { lib: lib_dir });
+    if built_lib_present(&lib_dir) && prebuilt_headers_present(&cache_root) {
+        return Ok(Prebuilt {
+            root: cache_root,
+            lib: lib_dir,
+        });
     }
 
     fs::create_dir_all(&cache_root)?;
@@ -270,14 +279,80 @@ fn fetch_prebuilt(version_tag: &str, target: &str) -> io::Result<Prebuilt> {
     // We rely on TLS + release hygiene. Advanced users can pin/verify externally.
 
     extract_tar_gz(&archive_path, &cache_root)?;
-    let pb = Prebuilt { lib: lib_dir };
+    let pb = Prebuilt {
+        root: cache_root,
+        lib: lib_dir,
+    };
     if !built_lib_present(&pb.lib) {
         return Err(io::Error::new(
             io::ErrorKind::Other,
             "prebuilt archive missing lib/libbb-external.a or lib/libbb_rust_api.a",
         ));
     }
+    if !prebuilt_headers_present(&pb.root) {
+        return Err(io::Error::new(
+            io::ErrorKind::Other,
+            "prebuilt archive missing Barretenberg headers or msgpack public headers",
+        ));
+    }
     Ok(pb)
+}
+
+fn prebuilt_headers_present(root: &Path) -> bool {
+    root.join("include/barretenberg").is_dir()
+        && root.join("include/msgpack.hpp").is_file()
+        && root.join("include-deps/msgpack/msgpack.hpp").is_file()
+        && root.join("include-deps/msgpack/msgpack").is_dir()
+}
+
+fn prebuilt_root_from_lib_dir(lib_dir: &Path) -> Option<PathBuf> {
+    let root = lib_dir.parent()?;
+    if root.join("include").exists() || root.join("include-deps").exists() {
+        Some(root.to_path_buf())
+    } else {
+        None
+    }
+}
+
+fn prebuilt_include_paths(root: &Path) -> IncludePaths {
+    IncludePaths {
+        include: root.join("include"),
+        msgpack: root.join("include-deps/msgpack"),
+    }
+}
+
+fn local_include_paths(repo_root: &Path, build_dir: &Path) -> IncludePaths {
+    IncludePaths {
+        include: repo_root.join("barretenberg/cpp/src"),
+        msgpack: build_dir.join("_deps/msgpack-c/src/msgpack-c/include"),
+    }
+}
+
+fn emit_include_metadata(paths: &IncludePaths) {
+    let joined = env::join_paths([&paths.include, &paths.msgpack])
+        .expect("failed to join Barretenberg include paths");
+    let include_flags = format!(
+        "-I{} -I{}",
+        paths.include.display(),
+        paths.msgpack.display()
+    );
+    let cxxflags = format!(
+        "-DMSGPACK_NO_BOOST -DMSGPACK_USE_STD_VARIANT_ADAPTOR {}",
+        include_flags
+    );
+
+    // Cargo exposes these as DEP_AZTEC_BARRETENBERG_* to immediate dependents
+    // because this crate declares links = "aztec_barretenberg".
+    println!("cargo:include={}", paths.include.display());
+    println!("cargo:include_deps_msgpack={}", paths.msgpack.display());
+    println!("cargo:include_paths={}", joined.to_string_lossy());
+    println!("cargo:include_flags={}", include_flags);
+    println!("cargo:cxxflags={}", cxxflags);
+    println!(
+        "cargo:warning=Barretenberg include paths: {}, {}",
+        paths.include.display(),
+        paths.msgpack.display()
+    );
 }
 
 fn crs_url(path: &str, override_var: &str) -> String {
@@ -530,12 +605,21 @@ fn main() {
         .unwrap_or_else(|| bb_build_dir.join("lib"));
 
     let mut using_downloaded_prebuilt = false;
+    let mut prebuilt_root = env_bb_lib.as_deref().and_then(prebuilt_root_from_lib_dir);
     if env_bb_lib.is_some() {
         if !bb_lib_dir.exists() {
             panic!(
                 "BB_LIB_DIR was set to {:?} but it does not exist",
                 bb_lib_dir
             );
+        }
+        if let Some(root) = prebuilt_root.as_deref() {
+            if !prebuilt_headers_present(root) {
+                panic!(
+                    "BB_LIB_DIR appears to point at a prebuilt package under {}, but include/include-deps/msgpack are incomplete",
+                    root.display()
+                );
+            }
         }
         println!(
             "cargo:warning=Using BB_LIB_DIR={} (no build)",
@@ -554,6 +638,7 @@ fn main() {
             match fetch_prebuilt(&ver, &triple) {
                 Ok(pb) => {
                     bb_lib_dir = pb.lib.clone();
+                    prebuilt_root = Some(pb.root.clone());
                     using_downloaded_prebuilt = true;
                     println!(
                         "cargo:warning=Using prebuilt Barretenberg {} for {}",
@@ -593,10 +678,22 @@ fn main() {
             );
             ensure_barretenberg_built(&bb_build_dir);
             bb_lib_dir = bb_build_dir.join("lib");
+            prebuilt_root = None;
         } else {
             panic!("Barretenberg libs not available and fallback disabled. Provide prebuilt (BB_USE_PREBUILT=1) or set BB_PREBUILT_ALLOW_BUILD_FALLBACK=1.");
         }
     }
+
+    let local_metadata_build_dir = env_bb_lib
+        .as_deref()
+        .and_then(|p| p.parent())
+        .filter(|p| p.join("_deps").exists())
+        .unwrap_or(&bb_build_dir);
+    let include_paths = prebuilt_root
+        .as_deref()
+        .map(prebuilt_include_paths)
+        .unwrap_or_else(|| local_include_paths(&repo_root, local_metadata_build_dir));
+    emit_include_metadata(&include_paths);
 
     // Rebuild if static archives change (or shim source if we build locally)
     println!(

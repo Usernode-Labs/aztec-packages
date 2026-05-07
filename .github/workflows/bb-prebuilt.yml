@@ -414,10 +414,12 @@ jobs:
           version='${{ env.VERSION_TAG }}'
           staging="staging"
           rm -rf "$staging"
-          mkdir -p "$staging/lib" "$staging/include" "$staging/include-deps/msgpack" "$staging/include-deps/tracy"
+          mkdir -p "$staging/lib" "$staging/include" "$staging/include-deps/msgpack"
           cp -a barretenberg/cpp/src/. "$staging/include/"
           cp -a build/_deps/msgpack-c/src/msgpack-c/include/. "$staging/include-deps/msgpack/" || true
-          cp -a build/_deps/tracy-src/public/. "$staging/include-deps/tracy/" || true
+          # Keep include-deps explicit for Cargo metadata, and mirror msgpack into include/
+          # so Barretenberg public headers remain self-contained for downstream C++ shims.
+          cp -a build/_deps/msgpack-c/src/msgpack-c/include/. "$staging/include/" || true
           # Copy only the libs required by the Rust shim (including shim)
           for lib in \
             libbb_rust_api.a \
@@ -429,6 +431,10 @@ jobs:
               exit 1
             fi
           done
+          nm -g "$staging/lib/libbb_rust_api.a" | grep -q 'srs_init_srs' || \
+            { echo "ERROR: libbb_rust_api.a missing srs_init_srs" >&2; exit 1; }
+          nm -g "$staging/lib/libbb_rust_api.a" | grep -q 'srs_init_grumpkin_srs' || \
+            { echo "ERROR: libbb_rust_api.a missing srs_init_grumpkin_srs" >&2; exit 1; }
           echo "$version" > "$staging/VERSION"
           asset="barretenberg-${version}-${target}.tar.gz"
           tar -czf "$asset" -C "$staging" .
@@ -437,6 +443,11 @@ jobs:
           tar -tzf "$asset" > "$listfile"
           grep -Eq '^(\./)?lib/libbb_rust_api\.a$' "$listfile" || { echo "ERROR: $asset missing lib/libbb_rust_api.a" >&2; cat "$listfile" >&2; exit 1; }
           grep -Eq '^(\./)?lib/libbb-external\.a$' "$listfile" || { echo "ERROR: $asset missing lib/libbb-external.a" >&2; cat "$listfile" >&2; exit 1; }
+          grep -Eq '^(\./)?include/barretenberg/ecc/curves/bn254/g1\.hpp$' "$listfile" || { echo "ERROR: $asset missing Barretenberg public headers" >&2; cat "$listfile" >&2; exit 1; }
+          grep -Eq '^(\./)?include/msgpack\.hpp$' "$listfile" || { echo "ERROR: $asset missing mirrored msgpack public headers" >&2; cat "$listfile" >&2; exit 1; }
+          grep -Eq '^(\./)?include-deps/msgpack/msgpack\.hpp$' "$listfile" || { echo "ERROR: $asset missing include-deps/msgpack" >&2; cat "$listfile" >&2; exit 1; }
+          ! grep -Eq '^(\./)?include/tracy/' "$listfile" || { echo "ERROR: $asset unexpectedly contains Tracy public headers" >&2; cat "$listfile" >&2; exit 1; }
+          ! grep -Eq '^(\./)?include-deps/tracy/' "$listfile" || { echo "ERROR: $asset unexpectedly contains include-deps/tracy" >&2; cat "$listfile" >&2; exit 1; }
           rm -f "$listfile"
           echo "ASSET=$asset" >> $GITHUB_ENV
 
@@ -480,6 +491,10 @@ jobs:
             tar -tzf "$f" > "$listfile"
             grep -Eq '^(\./)?lib/libbb_rust_api\.a$' "$listfile" || { echo "ERROR: $f missing lib/libbb_rust_api.a" >&2; cat "$listfile" >&2; exit 1; }
             grep -Eq '^(\./)?lib/libbb-external\.a$' "$listfile" || { echo "ERROR: $f missing lib/libbb-external.a" >&2; cat "$listfile" >&2; exit 1; }
+            grep -Eq '^(\./)?include/msgpack\.hpp$' "$listfile" || { echo "ERROR: $f missing mirrored msgpack public headers" >&2; cat "$listfile" >&2; exit 1; }
+            grep -Eq '^(\./)?include-deps/msgpack/msgpack\.hpp$' "$listfile" || { echo "ERROR: $f missing include-deps/msgpack" >&2; cat "$listfile" >&2; exit 1; }
+            ! grep -Eq '^(\./)?include/tracy/' "$listfile" || { echo "ERROR: $f unexpectedly contains Tracy public headers" >&2; cat "$listfile" >&2; exit 1; }
+            ! grep -Eq '^(\./)?include-deps/tracy/' "$listfile" || { echo "ERROR: $f unexpectedly contains include-deps/tracy" >&2; cat "$listfile" >&2; exit 1; }
             rm -f "$listfile"
           done
 
@@ -544,8 +559,6 @@ jobs:
           curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain stable
           echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
 
-      # No C++ toolchain needed; linking only
-
       - name: Download build artifacts
         uses: actions/download-artifact@v4
         with:
@@ -565,6 +578,24 @@ jobs:
           mkdir -p "$cache_dir"
           tar -xzf "$found" -C "$cache_dir"
           echo "$VERSION_TAG" > "$cache_dir/VERSION"
+
+      - name: Validate public header include paths
+        run: |
+          set -euxo pipefail
+          cache_dir="target/bb-prebuilt/${VERSION_TAG}/${TARGET}"
+          cat > /tmp/bb_public_header_check.cpp <<'EOF'
+          #include "barretenberg/ecc/curves/bn254/g1.hpp"
+          #include "barretenberg/ecc/curves/bn254/g2.hpp"
+          #include "barretenberg/ecc/curves/grumpkin/grumpkin.hpp"
+          #include "barretenberg/srs/global_crs.hpp"
+          int main() { return 0; }
+          EOF
+          common_flags=(-std=c++20 -DDISABLE_ASM=1 -DMSGPACK_NO_BOOST -DMSGPACK_USE_STD_VARIANT_ADAPTOR)
+          c++ "${common_flags[@]}" -I "$cache_dir/include" -fsyntax-only /tmp/bb_public_header_check.cpp
+          c++ "${common_flags[@]}" \
+            -I "$cache_dir/include" \
+            -I "$cache_dir/include-deps/msgpack" \
+            -fsyntax-only /tmp/bb_public_header_check.cpp
 
       - name: Build Rust crate against prebuilts
         env:
@@ -629,6 +660,24 @@ jobs:
           mkdir -p "$cache_dir"
           tar -xzf "$found" -C "$cache_dir"
           echo "$VERSION_TAG" > "$cache_dir/VERSION"
+
+      - name: Validate public header include paths (aarch64)
+        run: |
+          set -euxo pipefail
+          cache_dir="target/bb-prebuilt/${VERSION_TAG}/${TARGET}"
+          cat > /tmp/bb_public_header_check.cpp <<'EOF'
+          #include "barretenberg/ecc/curves/bn254/g1.hpp"
+          #include "barretenberg/ecc/curves/bn254/g2.hpp"
+          #include "barretenberg/ecc/curves/grumpkin/grumpkin.hpp"
+          #include "barretenberg/srs/global_crs.hpp"
+          int main() { return 0; }
+          EOF
+          common_flags=(-std=c++20 -DDISABLE_ASM=1 -DMSGPACK_NO_BOOST -DMSGPACK_USE_STD_VARIANT_ADAPTOR)
+          aarch64-linux-gnu-g++ "${common_flags[@]}" -I "$cache_dir/include" -fsyntax-only /tmp/bb_public_header_check.cpp
+          aarch64-linux-gnu-g++ "${common_flags[@]}" \
+            -I "$cache_dir/include" \
+            -I "$cache_dir/include-deps/msgpack" \
+            -fsyntax-only /tmp/bb_public_header_check.cpp
 
       - name: Build Rust crate against prebuilts (aarch64 target)
         env:

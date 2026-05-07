@@ -9,7 +9,9 @@
 #include <mutex>
 #include <ostream>
 #include <string_view>
+#ifdef TRACY_INSTRUMENTED
 #include <tracy/Tracy.hpp>
+#endif
 #include <unordered_map>
 #include <vector>
 
