@@ -90,7 +90,7 @@ fn infer_llvm_tool_from_compiler(compiler: &str, tool_name: &str) -> Option<Stri
 }
 
 fn built_lib_present(lib_dir: &Path) -> bool {
-    lib_dir.join("libbarretenberg.a").exists() && lib_dir.join("libbb_rust_api.a").exists()
+    lib_dir.join("libbb-external.a").exists() && lib_dir.join("libbb_rust_api.a").exists()
 }
 
 fn relwithdebinfo_flags(language: &str) -> &'static str {
@@ -254,7 +254,7 @@ fn fetch_prebuilt(version_tag: &str, target: &str) -> io::Result<Prebuilt> {
     let base_url = default_base_url();
     let cache_root = prebuilt_cache_dir().join(version_tag).join(target);
     let lib_dir = cache_root.join("lib");
-    if lib_dir.join("libbarretenberg.a").exists() {
+    if built_lib_present(&lib_dir) {
         return Ok(Prebuilt { lib: lib_dir });
     }
 
@@ -271,10 +271,10 @@ fn fetch_prebuilt(version_tag: &str, target: &str) -> io::Result<Prebuilt> {
 
     extract_tar_gz(&archive_path, &cache_root)?;
     let pb = Prebuilt { lib: lib_dir };
-    if !pb.lib.join("libbarretenberg.a").exists() {
+    if !built_lib_present(&pb.lib) {
         return Err(io::Error::new(
             io::ErrorKind::Other,
-            "prebuilt archive missing lib/libbarretenberg.a",
+            "prebuilt archive missing lib/libbb-external.a or lib/libbb_rust_api.a",
         ));
     }
     Ok(pb)
@@ -461,7 +461,7 @@ fn ensure_barretenberg_built(build_dir: &Path) {
     validate_relwithdebinfo_flags(build_dir);
 
     println!(
-        "cargo:warning=Building Barretenberg targets (bb, bb_rust_api, crypto_schnorr)
+        "cargo:warning=Building Barretenberg targets (bb-external, bb_rust_api)
   …"
     );
     let mut build = Command::new("cmake");
@@ -470,11 +470,9 @@ fn ensure_barretenberg_built(build_dir: &Path) {
         .arg("--build")
         .arg(build_dir)
         .arg("--target")
-        .arg("bb")
+        .arg("bb-external")
         .arg("--target")
-        .arg("bb_rust_api")
-        .arg("--target")
-        .arg("crypto_schnorr");
+        .arg("bb_rust_api");
     run(build);
 
     let lib_dir = build_dir.join("lib");
@@ -603,15 +601,15 @@ fn main() {
     // Rebuild if static archives change (or shim source if we build locally)
     println!(
         "cargo:rerun-if-changed={}",
-        bb_lib_dir.join("libbarretenberg.a").display()
+        bb_lib_dir.join("libbb-external.a").display()
     );
     println!(
         "cargo:rerun-if-changed={}",
         bb_lib_dir.join("libbb_rust_api.a").display()
     );
 
-    // bb_rust_api must come from the same Barretenberg build (or prebuilt package) as libbarretenberg.
-    // Building a local shim against a different libbarretenberg is unsafe (ABI/allocator mismatches).
+    // bb_rust_api must come from the same Barretenberg build (or prebuilt package) as libbb-external.
+    // Building a local shim against a different Barretenberg archive is unsafe (ABI/allocator mismatches).
     let shim_archive = bb_lib_dir.join("libbb_rust_api.a");
 
     if !shim_archive.exists() {
@@ -638,23 +636,10 @@ fn main() {
         .expect("failed to download CRS assets for embedded initialization");
     emit_embedded_crs_module(&out_dir).expect("failed to write embedded CRS module");
 
-    // Link against barretenberg and related static libs
+    // Link against the all-in-one static archive produced by 4.2.0 and the Usernode shim.
     println!("cargo:rustc-link-search=native={}", bb_lib_dir.display());
     let target_os = env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
-    let is_linux = target_os == "linux";
-    if is_linux {
-        println!("cargo:rustc-link-arg=-Wl,--start-group");
-    }
-    println!("cargo:rustc-link-lib=static=barretenberg");
-    println!("cargo:rustc-link-lib=static=env");
-    println!("cargo:rustc-link-lib=static=crypto_pedersen_commitment");
-    println!("cargo:rustc-link-lib=static=crypto_pedersen_hash");
-    println!("cargo:rustc-link-lib=static=crypto_poseidon2");
-    println!("cargo:rustc-link-lib=static=ecc");
-    println!("cargo:rustc-link-lib=static=crypto_schnorr");
-    if is_linux {
-        println!("cargo:rustc-link-arg=-Wl,--end-group");
-    }
+    println!("cargo:rustc-link-lib=static=bb-external");
 
     // Math + pthread everywhere
     println!("cargo:rustc-link-lib=dylib=m");

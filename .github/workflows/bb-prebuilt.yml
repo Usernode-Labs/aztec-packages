@@ -356,7 +356,7 @@ jobs:
 
       - name: Build static libraries (minimal set)
         run: |
-          cmake --build build --target barretenberg env crypto_schnorr crypto_pedersen_commitment crypto_pedersen_hash crypto_poseidon2 ecc bb_rust_api
+          cmake --build build --target bb-external bb_rust_api
 
       - name: Verify PIC flags (Linux)
         if: runner.os == 'Linux' && !contains(matrix.target, 'android')
@@ -364,13 +364,7 @@ jobs:
         run: |
           set -euo pipefail
           libs=(
-            libbarretenberg.a
-            libenv.a
-            libcrypto_schnorr.a
-            libcrypto_pedersen_commitment.a
-            libcrypto_pedersen_hash.a
-            libcrypto_poseidon2.a
-            libecc.a
+            libbb-external.a
             libbb_rust_api.a
           )
           for lib in "${libs[@]}"; do
@@ -427,13 +421,7 @@ jobs:
           # Copy only the libs required by the Rust shim (including shim)
           for lib in \
             libbb_rust_api.a \
-            libbarretenberg.a \
-            libenv.a \
-            libcrypto_schnorr.a \
-            libcrypto_pedersen_commitment.a \
-            libcrypto_pedersen_hash.a \
-            libcrypto_poseidon2.a \
-            libecc.a; do
+            libbb-external.a; do
             if [ -f build/lib/$lib ]; then
               cp -a build/lib/$lib "$staging/lib/"
             else
@@ -448,7 +436,7 @@ jobs:
           listfile=$(mktemp -t tarlist.XXXXXX)
           tar -tzf "$asset" > "$listfile"
           grep -Eq '^(\./)?lib/libbb_rust_api\.a$' "$listfile" || { echo "ERROR: $asset missing lib/libbb_rust_api.a" >&2; cat "$listfile" >&2; exit 1; }
-          grep -Eq '^(\./)?lib/libbarretenberg\.a$' "$listfile" || { echo "ERROR: $asset missing lib/libbarretenberg.a" >&2; cat "$listfile" >&2; exit 1; }
+          grep -Eq '^(\./)?lib/libbb-external\.a$' "$listfile" || { echo "ERROR: $asset missing lib/libbb-external.a" >&2; cat "$listfile" >&2; exit 1; }
           rm -f "$listfile"
           echo "ASSET=$asset" >> $GITHUB_ENV
 
@@ -491,7 +479,7 @@ jobs:
             listfile=$(mktemp -t tarlist.XXXXXX)
             tar -tzf "$f" > "$listfile"
             grep -Eq '^(\./)?lib/libbb_rust_api\.a$' "$listfile" || { echo "ERROR: $f missing lib/libbb_rust_api.a" >&2; cat "$listfile" >&2; exit 1; }
-            grep -Eq '^(\./)?lib/libbarretenberg\.a$' "$listfile" || { echo "ERROR: $f missing lib/libbarretenberg.a" >&2; cat "$listfile" >&2; exit 1; }
+            grep -Eq '^(\./)?lib/libbb-external\.a$' "$listfile" || { echo "ERROR: $f missing lib/libbb-external.a" >&2; cat "$listfile" >&2; exit 1; }
             rm -f "$listfile"
           done
 
@@ -1010,7 +998,7 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-      
+
       - name: Resolve crate version
         run: |
           crate_version=$(sed -n 's/^version\s*=\s*"\(.*\)"/\1/p' crates/aztec-barretenberg-sys-rs/Cargo.toml | head -n1)
@@ -1198,4 +1186,3 @@ jobs:
           export CARGO_TARGET_${env_upper}_RANLIB="${toolchain}/llvm-ranlib"
           export PKG_CONFIG_ALLOW_CROSS=1
           cargo build --target "$target" -p aztec-barretenberg-rs
-      

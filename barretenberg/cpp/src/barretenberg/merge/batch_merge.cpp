@@ -5,9 +5,9 @@
 #include "barretenberg/flavor/mega_flavor.hpp"
 #include "barretenberg/flavor/mega_recursive_flavor.hpp"
 #include "barretenberg/stdlib/hash/poseidon2/poseidon2.hpp"
-#include "barretenberg/stdlib/honk_verifier/ultra_recursive_verifier.hpp"
-#include "barretenberg/ultra_honk/decider_proving_key.hpp"
+#include "barretenberg/ultra_honk/prover_instance.hpp"
 #include "barretenberg/ultra_honk/ultra_prover.hpp"
+#include "barretenberg/ultra_honk/ultra_verifier.hpp"
 #include "batch_merge_embedded_vks.hpp"
 #include <stdexcept>
 
@@ -21,12 +21,14 @@ MergeResult merge(const std::vector<uint8_t>& proofA_fields_buf,
     using NativeVK = bb::MegaFlavor::VerificationKey;
     using Builder = bb::MegaCircuitBuilder;
     using RecFlavor = bb::MegaRecursiveFlavor_<Builder>;
-    using RecVerifier = bb::stdlib::recursion::honk::UltraRecursiveVerifier_<RecFlavor>;
+    using DefaultIO = bb::stdlib::recursion::honk::DefaultIO<Builder>;
+    using RecVerifier = bb::UltraVerifier_<RecFlavor, DefaultIO>;
+    using ProverInstance = bb::ProverInstance_<bb::MegaFlavor>;
 
     std::vector<bb::fr> proofA_fields = from_buffer<std::vector<bb::fr>>(proofA_fields_buf);
     std::vector<bb::fr> proofB_fields = from_buffer<std::vector<bb::fr>>(proofB_fields_buf);
-    auto vkA_native = from_buffer<std::shared_ptr<NativeVK>>(vkA_bytes);
-    auto vkB_native = from_buffer<std::shared_ptr<NativeVK>>(vkB_bytes);
+    auto vkA_native = std::make_shared<NativeVK>(from_buffer<NativeVK>(vkA_bytes));
+    auto vkB_native = std::make_shared<NativeVK>(from_buffer<NativeVK>(vkB_bytes));
 
     Builder builder;
     try {
@@ -73,28 +75,27 @@ MergeResult merge(const std::vector<uint8_t>& proofA_fields_buf,
         left_leaf.set_public();
         right_leaf.set_public();
 
-        using DefaultIO = bb::stdlib::recursion::honk::DefaultIO<Builder>;
-        RecVerifier verifierA{ &builder, vkA_and_hash };
-        RecVerifier verifierB{ &builder, vkB_and_hash };
-        typename RecVerifier::StdlibProof stdlib_proofA(proofA_fields_ff);
-        typename RecVerifier::StdlibProof stdlib_proofB(proofB_fields_ff);
+        RecVerifier verifierA{ vkA_and_hash };
+        RecVerifier verifierB{ vkB_and_hash };
+        typename RecVerifier::Proof stdlib_proofA(proofA_fields_ff);
+        typename RecVerifier::Proof stdlib_proofB(proofB_fields_ff);
 
-        auto outA = verifierA.template verify_proof<DefaultIO>(stdlib_proofA);
-        auto outB = verifierB.template verify_proof<DefaultIO>(stdlib_proofB);
+        auto outA = verifierA.verify_proof(stdlib_proofA);
+        auto outB = verifierB.verify_proof(stdlib_proofB);
 
-        bb::stdlib::recursion::PairingPoints<Builder> merged_pairing_points = outA.points_accumulator;
+        auto merged_pairing_points = outA.points_accumulator;
         merged_pairing_points.aggregate(outB.points_accumulator);
         DefaultIO out_io;
         out_io.pairing_inputs = merged_pairing_points;
         out_io.set_public();
 
         builder.finalize_circuit(true);
-        auto pk = std::make_shared<bb::DeciderProvingKey_<bb::MegaFlavor>>(builder);
-        auto vk_out = std::make_shared<bb::MegaFlavor::VerificationKey>(pk->get_precomputed());
-        bb::UltraProver_<bb::MegaFlavor> prover{ pk, vk_out };
+        auto prover_instance = std::make_shared<ProverInstance>(builder);
+        auto vk_out = std::make_shared<bb::MegaFlavor::VerificationKey>(prover_instance->get_precomputed());
+        bb::UltraProver_<bb::MegaFlavor> prover{ prover_instance, vk_out };
         auto merged_proof = prover.construct_proof();
         auto merged_proof_bytes = to_buffer<true>(merged_proof);
-        auto merged_vk_bytes = to_buffer(vk_out);
+        auto merged_vk_bytes = to_buffer(*vk_out);
         return { std::move(merged_proof_bytes), std::move(merged_vk_bytes) };
     } catch (const std::exception& e) {
         throw std::runtime_error(std::string("batch_merge: ") + e.what());
