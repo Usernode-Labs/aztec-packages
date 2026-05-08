@@ -1,12 +1,12 @@
 [package]
 name = "aztec-barretenberg-rs"
-version = "4.2.0-aztecnr-rc.2-usernode.2"
+version = "4.2.0-aztecnr-rc.2-usernode.3"
 edition = "2021"
 license = "MIT"
 description = "Safe Rust API for Barretenberg MegaHonk proving/verification and merge; ACVM execution always on."
 
 [dependencies]
-aztec-barretenberg-sys-rs = { path = "../aztec-barretenberg-sys-rs", version = "4.2.0-aztecnr-rc.2-usernode.2" }
+aztec-barretenberg-sys-rs = { path = "../aztec-barretenberg-sys-rs", version = "4.2.0-aztecnr-rc.2-usernode.3" }
 thiserror = "1"
 
 # ACVM stack for witness execution (always enabled)
