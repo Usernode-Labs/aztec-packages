@@ -590,11 +590,11 @@ fn main() {
     let use_prebuilt = env::var("BB_USE_PREBUILT")
         .ok()
         .map(|s| s == "1" || s.eq_ignore_ascii_case("true"))
-        .unwrap_or(false);
+        .unwrap_or(true);
     let allow_fallback = env::var("BB_PREBUILT_ALLOW_BUILD_FALLBACK")
         .ok()
         .map(|s| s == "1" || s.eq_ignore_ascii_case("true"))
-        .unwrap_or(true);
+        .unwrap_or(false);
 
     let bb_build_dir = env_bb_build.clone().unwrap_or_else(|| {
         build_dir_for_compilers(&repo_root, env_cc.as_deref(), env_cxx.as_deref())
