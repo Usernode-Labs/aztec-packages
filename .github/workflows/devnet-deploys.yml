@@ -4,10 +4,7 @@ name: Devnet Auto-Deploy
 # Triggered on every push to a devnet branch (v*-devnet-*).
 
 on:
-  push:
-    branches:
-      - "v*-devnet-*"
-
+  workflow_dispatch:
 concurrency:
   group: devnet-deploys-${{ github.ref_name }}
   cancel-in-progress: true

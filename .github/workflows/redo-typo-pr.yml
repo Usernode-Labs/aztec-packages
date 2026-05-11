@@ -8,15 +8,6 @@ on:
         required: true
         type: string
 
-  pull_request_target:
-    types: [labeled]
-    branches:
-      - master
-      - next
-      - merge-train/*
-    paths-ignore:
-      - '**/README.md'
-
 jobs:
   redo-typo-pr:
     if: github.event_name == 'workflow_dispatch' || contains(github.event.pull_request.labels.*.name, 'redo-typo-pr')

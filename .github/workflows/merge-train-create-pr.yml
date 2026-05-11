@@ -1,10 +1,7 @@
 name: Merge-Train Create PR
 
 on:
-  push:
-    branches:
-      - 'merge-train/*'
-
+  workflow_dispatch:
 jobs:
   create-pr:
     runs-on: ubuntu-latest

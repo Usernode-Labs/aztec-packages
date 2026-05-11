@@ -1,10 +1,7 @@
 name: Merge-Train PR Body
 
 on:
-  push:
-    branches:
-      - 'merge-train/**'
-      - 'backport-to-*-staging'
+  workflow_dispatch:
 
 jobs:
   update-pr-body:
