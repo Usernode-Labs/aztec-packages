@@ -6,13 +6,6 @@ name: CI3
 
 on:
   workflow_dispatch:
-  push:
-    tags:
-      - "v*"
-  pull_request:
-    types: [opened, synchronize, reopened, ready_for_review, labeled]
-  merge_group: {}
-
 concurrency:
   # Allow full concurrency for merge-train PRs, one-run-per-branch for everything else.
   group: ci3-${{ (startsWith(github.event.pull_request.head.ref, 'merge-train/') && github.run_id) || github.event.merge_group.head_ref || github.ref_name }}

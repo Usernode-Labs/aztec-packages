@@ -1,10 +1,7 @@
 name: Merge Train Auto-Pull
 
 on:
-  push:
-    branches:
-      - next
-
+  workflow_dispatch:
 jobs:
   merge-to-train:
     name: Merge next to ${{ matrix.train-branch }}

@@ -1,10 +1,7 @@
 name: Filter History to Linear Branch
 
 on:
-  push:
-    branches:
-      - next
-
+  workflow_dispatch:
 concurrency:
   group: filter-history
   cancel-in-progress: true

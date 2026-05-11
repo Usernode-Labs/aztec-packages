@@ -1,10 +1,7 @@
 name: Pull v4 into v4-next
 
 on:
-  push:
-    branches:
-      - v4
-
+  workflow_dispatch:
 permissions:
   contents: write
   pull-requests: write

@@ -2,9 +2,7 @@
 name: Cancel stale workflow runs on PR close or draft
 
 on:
-  pull_request:
-    types: [closed, converted_to_draft]
-
+  workflow_dispatch:
 concurrency:
   group: "cancel-stale-${{ github.event.pull_request.number }}"
 

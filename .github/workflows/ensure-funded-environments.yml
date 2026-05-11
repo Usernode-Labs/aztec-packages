@@ -15,9 +15,6 @@ on:
         required: false
         type: string
         default: "1.0"
-  schedule:
-    # Run daily at 2 AM UTC
-    - cron: "0 2 * * *"
 
 concurrency:
   group: ensure-funded-environments
@@ -47,4 +44,3 @@ jobs:
       low_watermark: ${{ inputs.low_watermark || '5.0' }}
       high_watermark: ${{ inputs.high_watermark || '10.0' }}
     secrets: inherit
-

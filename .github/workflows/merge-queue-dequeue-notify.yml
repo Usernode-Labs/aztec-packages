@@ -1,9 +1,7 @@
 name: Notify Slack on Merge Train Events
 
 on:
-  pull_request:
-    types: [dequeued, closed]
-
+  workflow_dispatch:
 jobs:
   notify-dequeued:
     name: Notify Slack (Dequeued)

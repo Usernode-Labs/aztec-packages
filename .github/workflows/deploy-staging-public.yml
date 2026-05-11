@@ -1,9 +1,6 @@
 name: Deploy to staging-public
 
 on:
-  push:
-    branches:
-      - v4
   workflow_dispatch: {}
 
 concurrency:

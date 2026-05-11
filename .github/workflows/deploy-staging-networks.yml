@@ -3,10 +3,6 @@
 name: Deploy Staging Networks
 
 on:
-  workflow_run:
-    workflows: ["CI3"]
-    types:
-      - completed
   workflow_dispatch:
     inputs:
       semver:

@@ -1,9 +1,6 @@
 name: Nightly Docs Release
 
 on:
-  schedule:
-    # Run every night at 4:00 AM UTC, after nightly tags are created
-    - cron: "0 4 * * *"
   workflow_dispatch:
     inputs:
       tag:
