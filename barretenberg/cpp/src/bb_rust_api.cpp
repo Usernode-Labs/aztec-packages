@@ -13,6 +13,7 @@
 #include "barretenberg/common/throw_or_abort.hpp"
 #include "barretenberg/dsl/acir_format/acir_format.hpp"
 #include "barretenberg/dsl/acir_format/acir_to_constraint_buf.hpp"
+#include "barretenberg/honk/proof_length.hpp"
 #include "barretenberg/merge/batch_merge.hpp"
 #include "barretenberg/ultra_honk/prover_instance.hpp"
 #include "barretenberg/stdlib_circuit_builders/mega_circuit_builder.hpp"
@@ -261,6 +262,29 @@ static int batch_merge_with_child_vk_internal(const uint8_t* proof_a,
                                          child_vk.data(),
                                          child_vk.size(),
                                          merged_proof_bytes);
+}
+
+template <typename RecFlavor>
+static std::vector<typename RecFlavor::FF> recursive_oink_public_inputs(
+    const std::shared_ptr<typename RecFlavor::VKAndHash>& vk_and_hash,
+    const std::vector<typename RecFlavor::FF>& proof_fields)
+{
+    auto transcript = std::make_shared<typename RecFlavor::Transcript>();
+    transcript->load_proof(proof_fields);
+
+    size_t log_n;
+    if constexpr (RecFlavor::USE_PADDING) {
+        log_n = static_cast<size_t>(RecFlavor::VIRTUAL_LOG_N);
+    } else {
+        log_n = static_cast<size_t>(vk_and_hash->vk->log_circuit_size.get_value());
+    }
+    const size_t num_public_inputs =
+        bb::ProofLength::Honk<RecFlavor>::derive_num_public_inputs(proof_fields.size(), log_n);
+
+    auto verifier_instance = std::make_shared<bb::VerifierInstance_<RecFlavor>>(vk_and_hash);
+    bb::OinkVerifier<RecFlavor> oink_verifier{ verifier_instance, transcript, num_public_inputs };
+    oink_verifier.verify();
+    return verifier_instance->public_inputs;
 }
 
 } // namespace
@@ -665,10 +689,7 @@ int bb_uhz_leaf_vk(const uint8_t* vk, size_t vk_len, uint8_t** out_vk, size_t* o
             proof_fields_ff.emplace_back(RecFlavor::FF::from_witness(&builder, field));
         }
 
-        RecVerifier verifier{ vk_and_hash };
-        typename RecVerifier::Proof stdlib_proof(proof_fields_ff);
-        auto output = verifier.verify_proof(stdlib_proof);
-        const auto& public_inputs = verifier.get_public_inputs();
+        auto public_inputs = recursive_oink_public_inputs<RecFlavor>(vk_and_hash, proof_fields_ff);
         if (public_inputs.empty()) {
             return BB_STATUS_MALFORMED_VK;
         }
@@ -676,6 +697,10 @@ int bb_uhz_leaf_vk(const uint8_t* vk, size_t vk_len, uint8_t** out_vk, size_t* o
         // Downstream aggregation expects one semantic public input plus DefaultIO pairing points.
         auto leaf_commitment = bb::stdlib::poseidon2<Builder>::hash(public_inputs);
         leaf_commitment.set_public();
+
+        RecVerifier verifier{ vk_and_hash };
+        typename RecVerifier::Proof stdlib_proof(proof_fields_ff);
+        auto output = verifier.verify_proof(stdlib_proof);
 
         // Propagate the recursion accumulator (pairing points) as DefaultIO public inputs,
         // so the wrapped Mega proof is compatible with downstream recursive aggregation.
@@ -755,10 +780,7 @@ int bb_uhz_leaf_wrap(const uint8_t* proof,
             proof_fields_ff.emplace_back(RecFlavor::FF::from_witness(&builder, field));
         }
 
-        RecVerifier verifier{ vk_and_hash };
-        typename RecVerifier::Proof stdlib_proof(proof_fields_ff);
-        auto output = verifier.verify_proof(stdlib_proof);
-        const auto& public_inputs = verifier.get_public_inputs();
+        auto public_inputs = recursive_oink_public_inputs<RecFlavor>(vk_and_hash, proof_fields_ff);
         if (public_inputs.empty()) {
             return BB_STATUS_MALFORMED_PROOF;
         }
@@ -767,6 +789,10 @@ int bb_uhz_leaf_wrap(const uint8_t* proof,
         auto leaf_commitment = bb::stdlib::poseidon2<Builder>::hash(public_inputs);
         leaf_commitment.assert_equal(expected_leaf_ff);
         leaf_commitment.set_public();
+
+        RecVerifier verifier{ vk_and_hash };
+        typename RecVerifier::Proof stdlib_proof(proof_fields_ff);
+        auto output = verifier.verify_proof(stdlib_proof);
 
         // Propagate the recursion accumulator (pairing points) as DefaultIO public inputs,
         // so the wrapped Mega proof is compatible with downstream recursive aggregation.
