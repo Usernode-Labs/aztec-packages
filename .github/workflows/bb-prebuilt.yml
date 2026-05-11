@@ -517,8 +517,21 @@ jobs:
         run: |
           set -euxo pipefail
           tag='${{ env.VERSION_TAG }}'
-          # Create release if missing (empty notes/title)
-          gh release view "$tag" >/dev/null 2>&1 || gh release create "$tag" -t "$tag" -n ""
+          repo='${{ github.repository }}'
+          # Create release if missing, then force it public in case a stale draft
+          # already exists for this tag from an earlier failed attempt.
+          release_id="$(gh api "repos/${repo}/releases/tags/${tag}" --jq .id 2>/dev/null || true)"
+          if [ -z "$release_id" ]; then
+            gh release create "$tag" -t "$tag" -n ""
+            release_id="$(gh api "repos/${repo}/releases/tags/${tag}" --jq .id)"
+          fi
+          gh api \
+            --method PATCH \
+            -H "Accept: application/vnd.github+json" \
+            "repos/${repo}/releases/${release_id}" \
+            -F draft=false \
+            -F prerelease=false \
+            -F name="$tag" >/dev/null
           # Proactively delete existing assets with same names to avoid stale bytes
           for f in out/barretenberg-*.tar.gz; do
             name=$(basename "$f")
