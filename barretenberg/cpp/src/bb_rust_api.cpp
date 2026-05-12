@@ -671,6 +671,7 @@ int bb_uhz_leaf_vk(const uint8_t* vk, size_t vk_len, uint8_t** out_vk, size_t* o
         auto native_vk = std::make_shared<bb::UltraZKFlavor::VerificationKey>(*vk_native);
         auto vk_std = std::make_shared<typename RecFlavor::VerificationKey>(&builder, native_vk);
         auto vk_hash_ff = RecFlavor::FF::from_witness(&builder, native_vk->hash());
+        vk_hash_ff.unset_free_witness_tag();
         auto vk_and_hash = std::make_shared<typename RecFlavor::VKAndHash>(vk_std, vk_hash_ff);
 
         // `create_mock_honk_proof` expects the *inner* (ACIR) public input count.
@@ -686,13 +687,16 @@ int bb_uhz_leaf_vk(const uint8_t* vk, size_t vk_len, uint8_t** out_vk, size_t* o
         std::vector<typename RecFlavor::FF> proof_fields_ff;
         proof_fields_ff.reserve(mock_proof.size());
         for (const auto& field : mock_proof) {
-            proof_fields_ff.emplace_back(RecFlavor::FF::from_witness(&builder, field));
+            auto proof_field_ff = RecFlavor::FF::from_witness(&builder, field);
+            proof_field_ff.unset_free_witness_tag();
+            proof_fields_ff.emplace_back(proof_field_ff);
         }
 
         auto public_inputs = recursive_oink_public_inputs<RecFlavor>(vk_and_hash, proof_fields_ff);
         if (public_inputs.empty()) {
             return BB_STATUS_MALFORMED_VK;
         }
+        bb::unset_free_witness_tags<true>(public_inputs);
         // Semantic leaf statement: a single commitment to all UltraZK public inputs.
         // Downstream aggregation expects one semantic public input plus DefaultIO pairing points.
         auto leaf_commitment = bb::stdlib::poseidon2<Builder>::hash(public_inputs);
@@ -772,20 +776,25 @@ int bb_uhz_leaf_wrap(const uint8_t* proof,
         auto native_vk = std::make_shared<bb::UltraZKFlavor::VerificationKey>(*vk_native);
         auto vk_std = std::make_shared<typename RecFlavor::VerificationKey>(&builder, native_vk);
         auto vk_hash_ff = RecFlavor::FF::from_witness(&builder, native_vk->hash());
+        vk_hash_ff.unset_free_witness_tag();
         auto vk_and_hash = std::make_shared<typename RecFlavor::VKAndHash>(vk_std, vk_hash_ff);
 
         std::vector<typename RecFlavor::FF> proof_fields_ff;
         proof_fields_ff.reserve(inner_proof.size());
         for (const auto& field : inner_proof) {
-            proof_fields_ff.emplace_back(RecFlavor::FF::from_witness(&builder, field));
+            auto proof_field_ff = RecFlavor::FF::from_witness(&builder, field);
+            proof_field_ff.unset_free_witness_tag();
+            proof_fields_ff.emplace_back(proof_field_ff);
         }
 
         auto public_inputs = recursive_oink_public_inputs<RecFlavor>(vk_and_hash, proof_fields_ff);
         if (public_inputs.empty()) {
             return BB_STATUS_MALFORMED_PROOF;
         }
+        bb::unset_free_witness_tags<true>(public_inputs);
         auto expected_leaf_native = fr_from_be32(expected_leaf_be32);
         auto expected_leaf_ff = RecFlavor::FF::from_witness(&builder, expected_leaf_native);
+        expected_leaf_ff.unset_free_witness_tag();
         auto leaf_commitment = bb::stdlib::poseidon2<Builder>::hash(public_inputs);
         leaf_commitment.assert_equal(expected_leaf_ff);
         leaf_commitment.set_public();
