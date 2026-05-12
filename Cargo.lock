@@ -267,7 +267,7 @@ checksum = "c08606f8c3cbf4ce6ec8e28fb0014a2c086708fe954eaa885384a6165172e7e8"
 
 [[package]]
 name = "aztec-barretenberg-rs"
-version = "4.2.0-aztecnr-rc.2-usernode.5"
+version = "4.2.0-aztecnr-rc.2-usernode.6"
 dependencies = [
  "acir",
  "acir_field",
@@ -287,7 +287,7 @@ dependencies = [
 
 [[package]]
 name = "aztec-barretenberg-sys-rs"
-version = "4.2.0-aztecnr-rc.2-usernode.5"
+version = "4.2.0-aztecnr-rc.2-usernode.6"
 dependencies = [
  "cc",
  "cmake",
