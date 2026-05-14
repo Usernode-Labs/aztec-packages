@@ -20,6 +20,14 @@ extern "C" {
         out_vk_len: *mut size_t,
     ) -> c_int;
 
+    pub fn bb_mh_circuit_metadata(
+        acir: *const u8,
+        acir_len: size_t,
+        out_log_dyadic_size: *mut u32,
+        out_max_log_dyadic_size: *mut u32,
+        out_num_public_inputs: *mut size_t,
+    ) -> c_int;
+
     pub fn bb_mh_prove(
         acir: *const u8,
         acir_len: size_t,

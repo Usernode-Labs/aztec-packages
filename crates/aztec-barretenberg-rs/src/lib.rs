@@ -7,6 +7,8 @@ use thiserror::Error;
 pub enum BbError {
     #[error("ffi not linked: {0}")]
     FfiUnavailable(&'static str),
+    #[error("circuit exceeds proof size limit")]
+    SizeLimit,
     #[error("operation failed: {0}")]
     Failure(&'static str),
 }
@@ -28,6 +30,13 @@ pub enum VerifyError {
 pub struct Vk(pub Vec<u8>);
 pub struct Proof(pub Vec<u8>);
 pub struct Witness(pub Vec<u8>);
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct MegaHonkCircuitMetadata {
+    pub log_dyadic_size: u32,
+    pub max_log_dyadic_size: u32,
+    pub num_public_inputs: usize,
+}
 
 fn init_crs_from_bytes(
     bn254_g1: &[u8],
@@ -106,6 +115,32 @@ pub fn mega_honk_vk_from_acir(_acir: &[u8]) -> std::result::Result<Vk, BbError> 
     }
 }
 
+pub fn mega_honk_circuit_metadata(
+    _acir: &[u8],
+) -> std::result::Result<MegaHonkCircuitMetadata, BbError> {
+    ensure_crs()?;
+    unsafe {
+        let mut log_dyadic_size: u32 = 0;
+        let mut max_log_dyadic_size: u32 = 0;
+        let mut num_public_inputs: usize = 0;
+        let rc = aztec_barretenberg_sys_rs::bb_mh_circuit_metadata(
+            _acir.as_ptr(),
+            _acir.len(),
+            &mut log_dyadic_size,
+            &mut max_log_dyadic_size,
+            &mut num_public_inputs,
+        );
+        if rc != 0 {
+            return Err(BbError::Failure("mega_honk_circuit_metadata"));
+        }
+        Ok(MegaHonkCircuitMetadata {
+            log_dyadic_size,
+            max_log_dyadic_size,
+            num_public_inputs,
+        })
+    }
+}
+
 pub fn prove_mega_honk(_acir: &[u8], _witness: &[u8]) -> std::result::Result<(Proof, Vk), BbError> {
     ensure_crs()?;
     unsafe {
@@ -124,6 +159,9 @@ pub fn prove_mega_honk(_acir: &[u8], _witness: &[u8]) -> std::result::Result<(Pr
             &mut v_len,
         );
         if rc != 0 {
+            if rc == 4 {
+                return Err(BbError::SizeLimit);
+            }
             return Err(BbError::Failure("prove_mega_honk"));
         }
         let proof = Proof(std::slice::from_raw_parts(p_ptr, p_len).to_vec());
