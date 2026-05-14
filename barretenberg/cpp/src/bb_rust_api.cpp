@@ -268,6 +268,15 @@ static int batch_merge_with_child_vk_internal(const uint8_t* proof_a,
                                          merged_proof_bytes);
 }
 
+template <typename Flavor> static bool exceeds_virtual_log_n(size_t log_dyadic_size)
+{
+    if constexpr (Flavor::USE_PADDING) {
+        return log_dyadic_size > Flavor::VIRTUAL_LOG_N;
+    } else {
+        return false;
+    }
+}
+
 template <typename RecFlavor>
 static std::vector<typename RecFlavor::FF> recursive_oink_public_inputs(
     const std::shared_ptr<typename RecFlavor::VKAndHash>& vk_and_hash,
@@ -358,6 +367,40 @@ int bb_mega_honk_vk_from_acir(const uint8_t* acir, size_t acir_len, uint8_t** ou
     }
 }
 
+int bb_mh_circuit_metadata(const uint8_t* acir,
+                           size_t acir_len,
+                           uint32_t* out_log_dyadic_size,
+                           uint32_t* out_max_log_dyadic_size,
+                           size_t* out_num_public_inputs)
+{
+    try {
+        std::vector<uint8_t> acir_vec(acir, acir + acir_len);
+        const acir_format::ProgramMetadata metadata{};
+        acir_format::AcirProgram program{ acir_format::circuit_buf_to_acir_format(std::move(acir_vec)), {} };
+        auto builder = acir_format::create_circuit<bb::MegaCircuitBuilder>(program, metadata);
+
+        using ProverInstance = bb::ProverInstance_<bb::MegaFlavor>;
+        ProverInstance prover_instance(builder);
+
+        if (out_log_dyadic_size) {
+            *out_log_dyadic_size = static_cast<uint32_t>(prover_instance.log_dyadic_size());
+        }
+        if (out_max_log_dyadic_size) {
+            *out_max_log_dyadic_size = static_cast<uint32_t>(bb::MegaFlavor::VIRTUAL_LOG_N);
+        }
+        if (out_num_public_inputs) {
+            *out_num_public_inputs = prover_instance.num_public_inputs();
+        }
+        return 0;
+    } catch (const std::exception& e) {
+        fprintf(stderr, "[bb][ERR] circuit metadata exception: %s\n", e.what());
+        return BB_STATUS_INTERNAL;
+    } catch (...) {
+        fprintf(stderr, "[bb][ERR] circuit metadata unknown exception\n");
+        return BB_STATUS_INTERNAL;
+    }
+}
+
 int bb_mh_prove(const uint8_t* acir,
                 size_t acir_len,
                 const uint8_t* witness,
@@ -377,6 +420,15 @@ int bb_mh_prove(const uint8_t* acir,
         using ProverInstance = bb::ProverInstance_<bb::MegaFlavor>;
         using VerificationKey = bb::MegaFlavor::VerificationKey;
         auto prover_instance = std::make_shared<ProverInstance>(builder);
+        const size_t log_dyadic_size = prover_instance->log_dyadic_size();
+        if (exceeds_virtual_log_n<bb::MegaFlavor>(log_dyadic_size)) {
+            fprintf(stderr,
+                    "[bb][ERR] prove exception: MegaHonk circuit too large for current recursive proof bound "
+                    "(log_n=%zu, max=%zu)\n",
+                    log_dyadic_size,
+                    bb::MegaFlavor::VIRTUAL_LOG_N);
+            return BB_STATUS_SIZE_LIMIT;
+        }
         auto verification_key = std::make_shared<VerificationKey>(prover_instance->get_precomputed());
         bb::UltraProver_<bb::MegaFlavor> prover{ prover_instance, verification_key };
         auto proof = prover.construct_proof();

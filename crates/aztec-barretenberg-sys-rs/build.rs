@@ -492,6 +492,7 @@ fn ensure_barretenberg_built(build_dir: &Path) {
         .arg("-DDISABLE_AZTEC_VM=ON")
         .arg("-DENABLE_TRACY=OFF")
         .arg("-DBB_BUILD_TRANSLATOR_VM=ON")
+        .arg("-DBB_BUILD_NODEJS_MODULE=OFF")
         .arg("-DBB_ENABLE_BENCH=OFF")
         .arg("-DBB_ENABLE_TESTS=OFF");
 
