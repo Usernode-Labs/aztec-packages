@@ -145,7 +145,9 @@ if(NOT FUZZING AND NOT WASM AND NOT MOBILE)
     # NOTE: Do not conditionally base this on the AVM flag as it defines a necessary vm2_sim library.
     add_subdirectory(barretenberg/vm2)
     add_subdirectory(barretenberg/ipc)
-    add_subdirectory(barretenberg/nodejs_module)
+    if(BB_BUILD_NODEJS_MODULE)
+        add_subdirectory(barretenberg/nodejs_module)
+    endif()
 endif()
 
 if(FUZZING_AVM)

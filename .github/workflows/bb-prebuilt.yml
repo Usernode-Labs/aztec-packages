@@ -138,6 +138,7 @@ jobs:
             -DCMAKE_C_COMPILER=${{ env.CC }} \
             -DCMAKE_CXX_COMPILER=${{ env.CXX }} \
             -DCMAKE_CXX_FLAGS="-Wno-error=shorten-64-to-32" \
+            -DBB_BUILD_NODEJS_MODULE=OFF \
             -DDISABLE_AZTEC_VM=ON \
             -DENABLE_TRACY=OFF \
             -DBB_BUILD_TRANSLATOR_VM=ON \
@@ -165,6 +166,7 @@ jobs:
             -DCMAKE_EXE_LINKER_FLAGS="-fuse-ld=lld" \
             -DCMAKE_SHARED_LINKER_FLAGS="-fuse-ld=lld" \
             -DCMAKE_TRY_COMPILE_TARGET_TYPE=STATIC_LIBRARY \
+            -DBB_BUILD_NODEJS_MODULE=OFF \
             -DDISABLE_AZTEC_VM=ON \
             -DENABLE_TRACY=OFF \
             -DBB_BUILD_TRANSLATOR_VM=ON \
@@ -237,6 +239,7 @@ jobs:
             -DANDROID_PLATFORM="${ANDROID_API}" \
             ${target_arch_arg} \
             ${arm_arg} \
+            -DBB_BUILD_NODEJS_MODULE=OFF \
             -DDISABLE_AZTEC_VM=ON \
             -DENABLE_TRACY=OFF \
             -DBB_BUILD_TRANSLATOR_VM=ON \
@@ -252,6 +255,7 @@ jobs:
             -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
             -DCMAKE_C_COMPILER=${{ env.CC }} \
             -DCMAKE_CXX_COMPILER=${{ env.CXX }} \
+            -DBB_BUILD_NODEJS_MODULE=OFF \
             -DDISABLE_AZTEC_VM=ON \
             -DENABLE_TRACY=OFF \
             -DBB_BUILD_TRANSLATOR_VM=ON \

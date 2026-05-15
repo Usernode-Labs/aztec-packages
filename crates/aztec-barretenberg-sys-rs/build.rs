@@ -4,10 +4,10 @@ use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
-const EXPECTED_BN254_G1: u64 = 134_217_792; // bytes, 2^21 + 1 points
+const EXPECTED_BN254_G1: u64 = 268_435_520; // bytes, 2^22 + 1 points
 const EXPECTED_BN254_G2: u64 = 128;
 const EXPECTED_GRUMPKIN_G1: u64 = 16_777_216; // bytes, 2^18 points
-const BN254_G1_POINTS: u32 = 2_097_153;
+const BN254_G1_POINTS: u32 = 4_194_305;
 const GRUMPKIN_POINTS: u32 = 262_144;
 const CRS_BASE_URL: &str = "https://crs.aztec.network";
 
