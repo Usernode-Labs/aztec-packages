@@ -422,6 +422,95 @@ pub fn batch_merge_leaf_with_vk(
     }
 }
 
+fn proof_ptrs(proofs: &[&[u8]]) -> (Vec<*const u8>, Vec<usize>) {
+    (
+        proofs.iter().map(|proof| proof.as_ptr()).collect(),
+        proofs.iter().map(|proof| proof.len()).collect(),
+    )
+}
+
+/// Merge K proofs and return both the merged proof and the verifier key for the
+/// resulting K-ary merge circuit.
+pub fn batch_merge_many_with_vk(
+    children: &[(&[u8], &[u8])],
+) -> std::result::Result<(Proof, Vk), BbError> {
+    ensure_crs()?;
+    if children.len() < 2 || children.len() > 24 {
+        return Err(BbError::Failure("batch_merge_many_with_vk arity"));
+    }
+
+    let proof_ptrs: Vec<*const u8> = children.iter().map(|(proof, _)| proof.as_ptr()).collect();
+    let proof_lens: Vec<usize> = children.iter().map(|(proof, _)| proof.len()).collect();
+    let vk_ptrs: Vec<*const u8> = children.iter().map(|(_, vk)| vk.as_ptr()).collect();
+    let vk_lens: Vec<usize> = children.iter().map(|(_, vk)| vk.len()).collect();
+
+    unsafe {
+        let mut p_ptr: *mut u8 = std::ptr::null_mut();
+        let mut p_len: usize = 0;
+        let mut v_ptr: *mut u8 = std::ptr::null_mut();
+        let mut v_len: usize = 0;
+        let rc = aztec_barretenberg_sys_rs::bb_batch_merge_many_with_vk(
+            children.len(),
+            proof_ptrs.as_ptr(),
+            proof_lens.as_ptr(),
+            vk_ptrs.as_ptr(),
+            vk_lens.as_ptr(),
+            &mut p_ptr,
+            &mut p_len,
+            &mut v_ptr,
+            &mut v_len,
+        );
+        if rc != 0 {
+            return Err(BbError::Failure(match rc {
+                1 => "batch_merge_many_with_vk internal",
+                2 => "batch_merge_many_with_vk malformed proof",
+                3 => "batch_merge_many_with_vk malformed vk",
+                4 => "batch_merge_many_with_vk size limit",
+                5 => "batch_merge_many_with_vk wrong proof type",
+                _ => "batch_merge_many_with_vk",
+            }));
+        }
+        let proof = Proof(std::slice::from_raw_parts(p_ptr, p_len).to_vec());
+        let vk = Vk(std::slice::from_raw_parts(v_ptr, v_len).to_vec());
+        aztec_barretenberg_sys_rs::bb_free(p_ptr);
+        aztec_barretenberg_sys_rs::bb_free(v_ptr);
+        Ok((proof, vk))
+    }
+}
+
+/// Merge K leaf proofs (children with potentially different VKs).
+pub fn batch_merge_leaf_many(children: &[(&[u8], &[u8])]) -> std::result::Result<Proof, BbError> {
+    ensure_crs()?;
+    if children.len() < 2 || children.len() > 24 {
+        return Err(BbError::Failure("batch_merge_leaf_many arity"));
+    }
+
+    let proof_ptrs: Vec<*const u8> = children.iter().map(|(proof, _)| proof.as_ptr()).collect();
+    let proof_lens: Vec<usize> = children.iter().map(|(proof, _)| proof.len()).collect();
+    let vk_ptrs: Vec<*const u8> = children.iter().map(|(_, vk)| vk.as_ptr()).collect();
+    let vk_lens: Vec<usize> = children.iter().map(|(_, vk)| vk.len()).collect();
+
+    unsafe {
+        let mut p_ptr: *mut u8 = std::ptr::null_mut();
+        let mut p_len: usize = 0;
+        let rc = aztec_barretenberg_sys_rs::bb_batch_merge_leaf_many(
+            children.len(),
+            proof_ptrs.as_ptr(),
+            proof_lens.as_ptr(),
+            vk_ptrs.as_ptr(),
+            vk_lens.as_ptr(),
+            &mut p_ptr,
+            &mut p_len,
+        );
+        if rc != 0 {
+            return Err(BbError::Failure("batch_merge_leaf_many"));
+        }
+        let proof = Proof(std::slice::from_raw_parts(p_ptr, p_len).to_vec());
+        aztec_barretenberg_sys_rs::bb_free(p_ptr);
+        Ok(proof)
+    }
+}
+
 /// Merge two merge-proofs whose children are leaf-merge proofs.
 pub fn batch_merge_from_leaf_merges(pa: &[u8], pb: &[u8]) -> std::result::Result<Proof, BbError> {
     ensure_crs()?;
@@ -478,6 +567,35 @@ pub fn batch_merge_from_leaf_merges_with_vk(
     }
 }
 
+/// Merge K merge-proofs whose children are leaf-merge proofs.
+pub fn batch_merge_from_leaf_merges_k(
+    arity: usize,
+    proofs: &[&[u8]],
+) -> std::result::Result<Proof, BbError> {
+    ensure_crs()?;
+    if proofs.len() != arity || !(2..=24).contains(&arity) {
+        return Err(BbError::Failure("batch_merge_from_leaf_merges_k arity"));
+    }
+    let (proof_ptrs, proof_lens) = proof_ptrs(proofs);
+    unsafe {
+        let mut p_ptr: *mut u8 = std::ptr::null_mut();
+        let mut p_len: usize = 0;
+        let rc = aztec_barretenberg_sys_rs::bb_batch_merge_from_leaf_merges_k(
+            arity,
+            proof_ptrs.as_ptr(),
+            proof_lens.as_ptr(),
+            &mut p_ptr,
+            &mut p_len,
+        );
+        if rc != 0 {
+            return Err(BbError::Failure("batch_merge_from_leaf_merges_k"));
+        }
+        let proof = Proof(std::slice::from_raw_parts(p_ptr, p_len).to_vec());
+        aztec_barretenberg_sys_rs::bb_free(p_ptr);
+        Ok(proof)
+    }
+}
+
 /// Merge two aggregate merge-proofs (depth >= 2).
 pub fn batch_merge(pa: &[u8], pb: &[u8]) -> std::result::Result<Proof, BbError> {
     ensure_crs()?;
@@ -494,6 +612,32 @@ pub fn batch_merge(pa: &[u8], pb: &[u8]) -> std::result::Result<Proof, BbError> 
         );
         if rc != 0 {
             return Err(BbError::Failure("batch_merge"));
+        }
+        let proof = Proof(std::slice::from_raw_parts(p_ptr, p_len).to_vec());
+        aztec_barretenberg_sys_rs::bb_free(p_ptr);
+        Ok(proof)
+    }
+}
+
+/// Merge K aggregate merge-proofs (depth >= 2).
+pub fn batch_merge_k(arity: usize, proofs: &[&[u8]]) -> std::result::Result<Proof, BbError> {
+    ensure_crs()?;
+    if proofs.len() != arity || !(2..=24).contains(&arity) {
+        return Err(BbError::Failure("batch_merge_k arity"));
+    }
+    let (proof_ptrs, proof_lens) = proof_ptrs(proofs);
+    unsafe {
+        let mut p_ptr: *mut u8 = std::ptr::null_mut();
+        let mut p_len: usize = 0;
+        let rc = aztec_barretenberg_sys_rs::bb_batch_merge_k(
+            arity,
+            proof_ptrs.as_ptr(),
+            proof_lens.as_ptr(),
+            &mut p_ptr,
+            &mut p_len,
+        );
+        if rc != 0 {
+            return Err(BbError::Failure("batch_merge_k"));
         }
         let proof = Proof(std::slice::from_raw_parts(p_ptr, p_len).to_vec());
         aztec_barretenberg_sys_rs::bb_free(p_ptr);
@@ -546,6 +690,25 @@ pub fn verify_batch_merge_leaf(proof: &[u8]) -> std::result::Result<bool, Verify
     }
 }
 
+/// Verify a K-ary leaf-level merge proof against the embedded leaf-merge VK.
+pub fn verify_batch_merge_leaf_k(
+    arity: usize,
+    proof: &[u8],
+) -> std::result::Result<bool, VerifyError> {
+    ensure_crs().map_err(|_| VerifyError::Internal)?;
+    unsafe {
+        let mut ok = false;
+        let rc = aztec_barretenberg_sys_rs::bb_verify_batch_merge_leaf_k(
+            arity,
+            proof.as_ptr(),
+            proof.len(),
+            &mut ok,
+        );
+        map_verify_rc(rc)?;
+        Ok(ok)
+    }
+}
+
 /// Verify a merge-proof of merge-proofs against the embedded aggregate-merge VK.
 pub fn verify_batch_merge(proof: &[u8]) -> std::result::Result<bool, VerifyError> {
     ensure_crs().map_err(|_| VerifyError::Internal)?;
@@ -553,6 +716,22 @@ pub fn verify_batch_merge(proof: &[u8]) -> std::result::Result<bool, VerifyError
         let mut ok = false;
         let rc =
             aztec_barretenberg_sys_rs::bb_verify_batch_merge(proof.as_ptr(), proof.len(), &mut ok);
+        map_verify_rc(rc)?;
+        Ok(ok)
+    }
+}
+
+/// Verify a K-ary merge-proof of merge-proofs against the embedded aggregate-merge VK.
+pub fn verify_batch_merge_k(arity: usize, proof: &[u8]) -> std::result::Result<bool, VerifyError> {
+    ensure_crs().map_err(|_| VerifyError::Internal)?;
+    unsafe {
+        let mut ok = false;
+        let rc = aztec_barretenberg_sys_rs::bb_verify_batch_merge_k(
+            arity,
+            proof.as_ptr(),
+            proof.len(),
+            &mut ok,
+        );
         map_verify_rc(rc)?;
         Ok(ok)
     }
@@ -572,6 +751,31 @@ pub fn batch_merge_public_inputs_leaf(proof: &[u8]) -> std::result::Result<Vec<u
         );
         if rc != 0 {
             return Err(BbError::Failure("batch_merge_public_inputs_leaf"));
+        }
+        let out = std::slice::from_raw_parts(p_ptr, p_len).to_vec();
+        aztec_barretenberg_sys_rs::bb_free(p_ptr);
+        Ok(out)
+    }
+}
+
+/// Extract K-ary leaf-level merge proof public inputs using the embedded leaf-merge VK.
+pub fn batch_merge_public_inputs_leaf_k(
+    arity: usize,
+    proof: &[u8],
+) -> std::result::Result<Vec<u8>, BbError> {
+    ensure_crs()?;
+    unsafe {
+        let mut p_ptr: *mut u8 = std::ptr::null_mut();
+        let mut p_len: usize = 0;
+        let rc = aztec_barretenberg_sys_rs::bb_batch_merge_public_inputs_leaf_k(
+            arity,
+            proof.as_ptr(),
+            proof.len(),
+            &mut p_ptr,
+            &mut p_len,
+        );
+        if rc != 0 {
+            return Err(BbError::Failure("batch_merge_public_inputs_leaf_k"));
         }
         let out = std::slice::from_raw_parts(p_ptr, p_len).to_vec();
         aztec_barretenberg_sys_rs::bb_free(p_ptr);
@@ -600,6 +804,31 @@ pub fn batch_merge_public_inputs(proof: &[u8]) -> std::result::Result<Vec<u8>, B
     }
 }
 
+/// Extract K-ary merge-proof public inputs using the embedded aggregate-merge VK.
+pub fn batch_merge_public_inputs_k(
+    arity: usize,
+    proof: &[u8],
+) -> std::result::Result<Vec<u8>, BbError> {
+    ensure_crs()?;
+    unsafe {
+        let mut p_ptr: *mut u8 = std::ptr::null_mut();
+        let mut p_len: usize = 0;
+        let rc = aztec_barretenberg_sys_rs::bb_batch_merge_public_inputs_k(
+            arity,
+            proof.as_ptr(),
+            proof.len(),
+            &mut p_ptr,
+            &mut p_len,
+        );
+        if rc != 0 {
+            return Err(BbError::Failure("batch_merge_public_inputs_k"));
+        }
+        let out = std::slice::from_raw_parts(p_ptr, p_len).to_vec();
+        aztec_barretenberg_sys_rs::bb_free(p_ptr);
+        Ok(out)
+    }
+}
+
 /// Return the embedded VK bytes used for leaf-level merge proofs.
 pub fn batch_merge_leaf_vk() -> std::result::Result<Vk, BbError> {
     ensure_crs()?;
@@ -616,6 +845,22 @@ pub fn batch_merge_leaf_vk() -> std::result::Result<Vk, BbError> {
     }
 }
 
+/// Return the embedded VK bytes used for K-ary leaf-level merge proofs.
+pub fn batch_merge_leaf_vk_k(arity: usize) -> std::result::Result<Vk, BbError> {
+    ensure_crs()?;
+    unsafe {
+        let mut v_ptr: *mut u8 = std::ptr::null_mut();
+        let mut v_len: usize = 0;
+        let rc = aztec_barretenberg_sys_rs::bb_batch_merge_leaf_vk_k(arity, &mut v_ptr, &mut v_len);
+        if rc != 0 {
+            return Err(BbError::Failure("batch_merge_leaf_vk_k"));
+        }
+        let vk = Vk(std::slice::from_raw_parts(v_ptr, v_len).to_vec());
+        aztec_barretenberg_sys_rs::bb_free(v_ptr);
+        Ok(vk)
+    }
+}
+
 /// Return the embedded VK bytes used for aggregate merge proofs.
 pub fn batch_merge_agg_vk() -> std::result::Result<Vk, BbError> {
     ensure_crs()?;
@@ -625,6 +870,22 @@ pub fn batch_merge_agg_vk() -> std::result::Result<Vk, BbError> {
         let rc = aztec_barretenberg_sys_rs::bb_batch_merge_agg_vk(&mut v_ptr, &mut v_len);
         if rc != 0 {
             return Err(BbError::Failure("batch_merge_agg_vk"));
+        }
+        let vk = Vk(std::slice::from_raw_parts(v_ptr, v_len).to_vec());
+        aztec_barretenberg_sys_rs::bb_free(v_ptr);
+        Ok(vk)
+    }
+}
+
+/// Return the embedded VK bytes used for K-ary aggregate merge proofs.
+pub fn batch_merge_agg_vk_k(arity: usize) -> std::result::Result<Vk, BbError> {
+    ensure_crs()?;
+    unsafe {
+        let mut v_ptr: *mut u8 = std::ptr::null_mut();
+        let mut v_len: usize = 0;
+        let rc = aztec_barretenberg_sys_rs::bb_batch_merge_agg_vk_k(arity, &mut v_ptr, &mut v_len);
+        if rc != 0 {
+            return Err(BbError::Failure("batch_merge_agg_vk_k"));
         }
         let vk = Vk(std::slice::from_raw_parts(v_ptr, v_len).to_vec());
         aztec_barretenberg_sys_rs::bb_free(v_ptr);

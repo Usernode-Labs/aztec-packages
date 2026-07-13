@@ -55,6 +55,20 @@ extern "C" {
 
     pub fn bb_verify_batch_merge(proof: *const u8, proof_len: size_t, out_ok: *mut bool) -> c_int;
 
+    pub fn bb_verify_batch_merge_leaf_k(
+        arity: size_t,
+        proof: *const u8,
+        proof_len: size_t,
+        out_ok: *mut bool,
+    ) -> c_int;
+
+    pub fn bb_verify_batch_merge_k(
+        arity: size_t,
+        proof: *const u8,
+        proof_len: size_t,
+        out_ok: *mut bool,
+    ) -> c_int;
+
     pub fn bb_mh_public_inputs(
         proof: *const u8,
         proof_len: size_t,
@@ -78,9 +92,37 @@ extern "C" {
         out_len: *mut size_t,
     ) -> c_int;
 
+    pub fn bb_batch_merge_public_inputs_leaf_k(
+        arity: size_t,
+        proof: *const u8,
+        proof_len: size_t,
+        out_ptr: *mut *mut u8,
+        out_len: *mut size_t,
+    ) -> c_int;
+
+    pub fn bb_batch_merge_public_inputs_k(
+        arity: size_t,
+        proof: *const u8,
+        proof_len: size_t,
+        out_ptr: *mut *mut u8,
+        out_len: *mut size_t,
+    ) -> c_int;
+
     pub fn bb_batch_merge_leaf_vk(out_ptr: *mut *mut u8, out_len: *mut size_t) -> c_int;
 
     pub fn bb_batch_merge_agg_vk(out_ptr: *mut *mut u8, out_len: *mut size_t) -> c_int;
+
+    pub fn bb_batch_merge_leaf_vk_k(
+        arity: size_t,
+        out_ptr: *mut *mut u8,
+        out_len: *mut size_t,
+    ) -> c_int;
+
+    pub fn bb_batch_merge_agg_vk_k(
+        arity: size_t,
+        out_ptr: *mut *mut u8,
+        out_len: *mut size_t,
+    ) -> c_int;
 
     pub fn bb_mh_vk_hash(vk: *const u8, vk_len: size_t, out_be32: *mut u8) -> c_int;
 
@@ -148,6 +190,28 @@ extern "C" {
         out_merged_vk_len: *mut size_t,
     ) -> c_int;
 
+    pub fn bb_batch_merge_many_with_vk(
+        arity: size_t,
+        proof_ptrs: *const *const u8,
+        proof_lens: *const size_t,
+        vk_ptrs: *const *const u8,
+        vk_lens: *const size_t,
+        out_merged_proof: *mut *mut u8,
+        out_merged_proof_len: *mut size_t,
+        out_merged_vk: *mut *mut u8,
+        out_merged_vk_len: *mut size_t,
+    ) -> c_int;
+
+    pub fn bb_batch_merge_leaf_many(
+        arity: size_t,
+        proof_ptrs: *const *const u8,
+        proof_lens: *const size_t,
+        vk_ptrs: *const *const u8,
+        vk_lens: *const size_t,
+        out_merged_proof: *mut *mut u8,
+        out_merged_proof_len: *mut size_t,
+    ) -> c_int;
+
     pub fn bb_batch_merge_from_leaf_merges(
         proof_a: *const u8,
         len_a: size_t,
@@ -168,6 +232,14 @@ extern "C" {
         out_merged_vk_len: *mut size_t,
     ) -> c_int;
 
+    pub fn bb_batch_merge_from_leaf_merges_k(
+        arity: size_t,
+        proof_ptrs: *const *const u8,
+        proof_lens: *const size_t,
+        out_merged_proof: *mut *mut u8,
+        out_merged_proof_len: *mut size_t,
+    ) -> c_int;
+
     pub fn bb_batch_merge(
         proof_a: *const u8,
         len_a: size_t,
@@ -186,6 +258,14 @@ extern "C" {
         out_merged_proof_len: *mut size_t,
         out_merged_vk: *mut *mut u8,
         out_merged_vk_len: *mut size_t,
+    ) -> c_int;
+
+    pub fn bb_batch_merge_k(
+        arity: size_t,
+        proof_ptrs: *const *const u8,
+        proof_lens: *const size_t,
+        out_merged_proof: *mut *mut u8,
+        out_merged_proof_len: *mut size_t,
     ) -> c_int;
 
     pub fn bb_schnorr_blake2s_sign(
