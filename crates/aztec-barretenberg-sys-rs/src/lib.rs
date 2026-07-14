@@ -232,6 +232,8 @@ extern "C" {
         out_merged_vk_len: *mut size_t,
     ) -> c_int;
 
+    /// Homogeneous fast path: every child must use the leaf-merge VK for `arity`.
+    /// Use `bb_batch_merge_many_with_vk` for mixed child arities.
     pub fn bb_batch_merge_from_leaf_merges_k(
         arity: size_t,
         proof_ptrs: *const *const u8,
@@ -260,6 +262,8 @@ extern "C" {
         out_merged_vk_len: *mut size_t,
     ) -> c_int;
 
+    /// Homogeneous fast path: every child must use the aggregate-merge VK for `arity`.
+    /// Use `bb_batch_merge_many_with_vk` for mixed child arities.
     pub fn bb_batch_merge_k(
         arity: size_t,
         proof_ptrs: *const *const u8,

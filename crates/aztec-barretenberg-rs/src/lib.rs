@@ -567,7 +567,11 @@ pub fn batch_merge_from_leaf_merges_with_vk(
     }
 }
 
-/// Merge K merge-proofs whose children are leaf-merge proofs.
+/// Merge K homogeneous leaf-merge proofs.
+///
+/// `arity` is both the number of children and the required arity of every
+/// child's embedded leaf-merge VK. Use [`batch_merge_many_with_vk`] when child
+/// merge proofs have mixed arities.
 pub fn batch_merge_from_leaf_merges_k(
     arity: usize,
     proofs: &[&[u8]],
@@ -619,7 +623,11 @@ pub fn batch_merge(pa: &[u8], pb: &[u8]) -> std::result::Result<Proof, BbError> 
     }
 }
 
-/// Merge K aggregate merge-proofs (depth >= 2).
+/// Merge K homogeneous aggregate merge-proofs (depth >= 2).
+///
+/// `arity` is both the number of children and the required arity of every
+/// child's embedded aggregate-merge VK. Use [`batch_merge_many_with_vk`] when
+/// child merge proofs have mixed arities.
 pub fn batch_merge_k(arity: usize, proofs: &[&[u8]]) -> std::result::Result<Proof, BbError> {
     ensure_crs()?;
     if proofs.len() != arity || !(2..=24).contains(&arity) {
@@ -991,7 +999,7 @@ impl acvm::blackbox_solver::BlackBoxFunctionSolver<FE> for BarretenbergBlackBoxS
         _scalars_lo: &[FE],
         _scalars_hi: &[FE],
     ) -> std::result::Result<(FE, FE, FE), acvm::BlackBoxResolutionError> {
-        if _points.len() % 3 != 0
+        if !_points.len().is_multiple_of(3)
             || _scalars_lo.len() != _scalars_hi.len()
             || _points.len() / 3 != _scalars_lo.len()
         {
@@ -1237,7 +1245,7 @@ pub fn grumpkin_hash_to_curve(
         let rc = aztec_barretenberg_sys_rs::bb_grumpkin_hash_to_curve(
             field_be.as_ptr(),
             1,
-            domain as u32,
+            domain,
             x.as_mut_ptr(),
             y.as_mut_ptr(),
         );

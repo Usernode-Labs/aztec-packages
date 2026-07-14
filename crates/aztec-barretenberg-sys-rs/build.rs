@@ -188,25 +188,21 @@ fn download_with(cmd: &str, url: &str, dest: &Path) -> io::Result<bool> {
         "wget" => Command::new("wget").arg("-qO").arg(dest).arg(url).status(),
         _ => return Ok(false),
     }
-    .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("spawn {}: {}", cmd, e)))?;
+    .map_err(|e| io::Error::other(format!("spawn {}: {}", cmd, e)))?;
     Ok(status.success())
 }
 
 fn download(url: &str, dest: &Path) -> io::Result<()> {
-    if cmd_exists("curl") {
-        if download_with("curl", url, dest)? {
-            return Ok(());
-        }
+    if cmd_exists("curl") && download_with("curl", url, dest)? {
+        return Ok(());
     }
-    if cmd_exists("wget") {
-        if download_with("wget", url, dest)? {
-            return Ok(());
-        }
+    if cmd_exists("wget") && download_with("wget", url, dest)? {
+        return Ok(());
     }
-    Err(io::Error::new(
-        io::ErrorKind::Other,
-        format!("failed to download {} (need curl or wget)", url),
-    ))
+    Err(io::Error::other(format!(
+        "failed to download {} (need curl or wget)",
+        url
+    )))
 }
 
 fn extract_tar_gz(archive: &Path, dest: &Path) -> io::Result<()> {
@@ -219,10 +215,7 @@ fn extract_tar_gz(archive: &Path, dest: &Path) -> io::Result<()> {
         .arg(dest)
         .status()?;
     if !status.success() {
-        return Err(io::Error::new(
-            io::ErrorKind::Other,
-            "tar extraction failed",
-        ));
+        return Err(io::Error::other("tar extraction failed"));
     }
     Ok(())
 }
@@ -284,14 +277,12 @@ fn fetch_prebuilt(version_tag: &str, target: &str) -> io::Result<Prebuilt> {
         lib: lib_dir,
     };
     if !built_lib_present(&pb.lib) {
-        return Err(io::Error::new(
-            io::ErrorKind::Other,
+        return Err(io::Error::other(
             "prebuilt archive missing lib/libbb-external.a or lib/libbb_rust_api.a",
         ));
     }
     if !prebuilt_headers_present(&pb.root) {
-        return Err(io::Error::new(
-            io::ErrorKind::Other,
+        return Err(io::Error::other(
             "prebuilt archive missing Barretenberg headers or msgpack public headers",
         ));
     }
@@ -387,27 +378,24 @@ fn download_crs_file(
             .arg("-o")
             .arg(dest)
             .status()
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("spawn curl: {}", e)))?;
+            .map_err(|e| io::Error::other(format!("spawn curl: {}", e)))?;
         if !status.success() {
-            return Err(io::Error::new(
-                io::ErrorKind::Other,
-                format!("curl range download failed for {}", url),
-            ));
+            return Err(io::Error::other(format!(
+                "curl range download failed for {}",
+                url
+            )));
         }
     } else {
         download(url, dest)?;
     }
     let len = fs::metadata(dest)?.len();
     if len != expected_len {
-        return Err(io::Error::new(
-            io::ErrorKind::Other,
-            format!(
-                "CRS download {} had length {} (expected {})",
-                dest.display(),
-                len,
-                expected_len
-            ),
-        ));
+        return Err(io::Error::other(format!(
+            "CRS download {} had length {} (expected {})",
+            dest.display(),
+            len,
+            expected_len
+        )));
     }
     Ok(())
 }
@@ -602,7 +590,6 @@ fn main() {
     });
     let mut bb_lib_dir = env_bb_lib
         .clone()
-        .map(|p| p)
         .unwrap_or_else(|| bb_build_dir.join("lib"));
 
     let mut using_downloaded_prebuilt = false;

@@ -1,8 +1,19 @@
 #pragma once
+#include <cstddef>
 #include <cstdint>
 #include <vector>
 
 namespace bb::batch_merge {
+
+inline constexpr size_t MIN_MERGE_ARITY = 2;
+inline constexpr size_t MAX_MERGE_ARITY = 24;
+inline constexpr uint64_t BATCH_PARENT_HASH_TAG = 20;
+inline constexpr uint64_t BATCH_INPUTS_ROOT_TAG = 21;
+inline constexpr uint64_t BATCH_OUTPUTS_ROOT_TAG = 22;
+inline constexpr size_t LEAF_SEMANTIC_PUBLIC_INPUTS = 5;
+inline constexpr size_t MERGE_PUBLIC_STATEMENT_BASE_WIDTH = 6;
+inline constexpr size_t MERGE_SEMANTIC_PUBLIC_INPUTS =
+    MERGE_PUBLIC_STATEMENT_BASE_WIDTH + 3 * MAX_MERGE_ARITY;
 
 struct MergeResult {
     std::vector<uint8_t> merged_proof_bytes;
@@ -45,6 +56,14 @@ MergeResult merge(const std::vector<uint8_t>& proofA_fields_buf,
 // The remaining seventy-two public inputs are twenty-four triples of
 // [child_vk_hash, child_batch_root, child_count] in child order. Slots above the
 // active arity are zero.
+//
+// Children must use one of two exact semantic schemas:
+// - transaction leaf: five fields, representing exactly one top-level
+//   transaction (its input/output cardinalities may still vary);
+// - batch merge: the fixed 78-field schema above, whose count is propagated.
+// New leaf proof families must normalize to the five-field transaction schema,
+// or introduce an explicitly versioned merge schema instead of relying on
+// public-input width heuristics.
 MergeResult merge_many(const std::vector<MergeInput>& children);
 
 const std::vector<uint8_t>& embedded_leaf_merge_vk();

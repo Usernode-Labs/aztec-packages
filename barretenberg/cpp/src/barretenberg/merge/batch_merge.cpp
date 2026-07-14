@@ -15,12 +15,6 @@
 
 namespace bb::batch_merge {
 
-static constexpr uint256_t BATCH_PARENT_HASH_TAG = 20;
-static constexpr uint256_t BATCH_INPUTS_ROOT_TAG = 21;
-static constexpr uint256_t BATCH_OUTPUTS_ROOT_TAG = 22;
-static constexpr size_t MIN_MERGE_ARITY = 2;
-static constexpr size_t MAX_MERGE_ARITY = 24;
-
 MergeResult merge(const std::vector<uint8_t>& proofA_fields_buf,
                   const std::vector<uint8_t>& vkA_bytes,
                   const std::vector<uint8_t>& proofB_fields_buf,
@@ -61,14 +55,19 @@ MergeResult merge_many(const std::vector<MergeInput>& children)
     Builder builder;
     try {
         static constexpr size_t DEFAULT_PUBLIC_INPUTS = bb::DefaultIO::PUBLIC_INPUTS_SIZE;
+        // Poseidon2 currently rejects literal circuit constants. Materialize protocol
+        // constants as witnesses and fix them with equality gates so they remain
+        // circuit-defined rather than caller-controlled.
+        auto fixed_witness = [&](const bb::fr& value) {
+            auto fixed = RecFlavor::FF(&builder, value);
+            fixed.convert_constant_to_fixed_witness(&builder);
+            return fixed;
+        };
         auto one_count = [&]() {
-            auto count = RecFlavor::FF::from_witness(&builder, bb::fr(1));
-            count.unset_free_witness_tag();
-            return count;
+            return fixed_witness(bb::fr(1));
         };
         auto publish_zero = [&]() {
-            auto zero = RecFlavor::FF::from_witness(&builder, bb::fr(0));
-            zero.unset_free_witness_tag();
+            auto zero = fixed_witness(bb::fr(0));
             zero.set_public();
         };
 
@@ -101,15 +100,20 @@ MergeResult merge_many(const std::vector<MergeInput>& children)
             }
 
             const size_t total_public_inputs = static_cast<size_t>(native_vk->num_public_inputs);
-            const size_t semantic_public_inputs =
-                total_public_inputs > DEFAULT_PUBLIC_INPUTS ? total_public_inputs - DEFAULT_PUBLIC_INPUTS
-                                                            : total_public_inputs;
-            auto count = one_count();
-            if (semantic_public_inputs > 5) {
+            if (total_public_inputs < DEFAULT_PUBLIC_INPUTS) {
+                throw_or_abort("batch_merge: child proof is missing DefaultIO public inputs");
+            }
+            const size_t semantic_public_inputs = total_public_inputs - DEFAULT_PUBLIC_INPUTS;
+            typename RecFlavor::FF count;
+            if (semantic_public_inputs == LEAF_SEMANTIC_PUBLIC_INPUTS) {
+                count = one_count();
+            } else if (semantic_public_inputs == MERGE_SEMANTIC_PUBLIC_INPUTS) {
                 if (proof_fields_ff.size() < 6) {
                     throw_or_abort("batch_merge: merge child proof has no count public input");
                 }
                 count = proof_fields_ff[5];
+            } else {
+                throw_or_abort("batch_merge: child proof has unsupported semantic public-input width");
             }
 
             prepared.push_back(PreparedChild{
@@ -131,14 +135,10 @@ MergeResult merge_many(const std::vector<MergeInput>& children)
             prepared.back().inputs_set_accumulator_b = prepared.back().proof_fields_ff[4];
         }
 
-        auto parent_tag = RecFlavor::FF::from_witness(&builder, bb::fr(BATCH_PARENT_HASH_TAG));
-        auto inputs_tag = RecFlavor::FF::from_witness(&builder, bb::fr(BATCH_INPUTS_ROOT_TAG));
-        auto outputs_tag = RecFlavor::FF::from_witness(&builder, bb::fr(BATCH_OUTPUTS_ROOT_TAG));
-        auto arity_ff = RecFlavor::FF::from_witness(&builder, bb::fr(children.size()));
-        parent_tag.unset_free_witness_tag();
-        inputs_tag.unset_free_witness_tag();
-        outputs_tag.unset_free_witness_tag();
-        arity_ff.unset_free_witness_tag();
+        const auto parent_tag = fixed_witness(bb::fr(BATCH_PARENT_HASH_TAG));
+        const auto inputs_tag = fixed_witness(bb::fr(BATCH_INPUTS_ROOT_TAG));
+        const auto outputs_tag = fixed_witness(bb::fr(BATCH_OUTPUTS_ROOT_TAG));
+        const auto arity_ff = fixed_witness(bb::fr(children.size()));
 
         std::vector<RecFlavor::FF> parent_inputs;
         parent_inputs.reserve(2 + prepared.size() * 3);

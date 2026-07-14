@@ -58,7 +58,7 @@ static constexpr size_t FR_SERIALIZED_BYTES = 32;
 static constexpr size_t U32_PREFIX_BYTES = 4;
 static constexpr size_t MAX_PROOF_BYTES = 16 * 1024 * 1024;
 static constexpr size_t MAX_VK_BYTES = 1 * 1024 * 1024;
-static constexpr size_t BATCH_MERGE_MAX_ARITY = 24;
+static constexpr size_t BATCH_MERGE_MAX_ARITY = bb::batch_merge::MAX_MERGE_ARITY;
 
 static inline void be32_to_le_limbs(const uint8_t* in_be, uint64_t out_le[4])
 {
@@ -320,7 +320,7 @@ static int batch_merge_many_with_vks_internal(size_t arity,
 static size_t batch_merge_semantic_public_inputs(size_t arity)
 {
     (void)arity;
-    return 6 + 3 * BATCH_MERGE_MAX_ARITY;
+    return bb::batch_merge::MERGE_SEMANTIC_PUBLIC_INPUTS;
 }
 
 static int batch_merge_many_with_child_vk_internal(size_t arity,
@@ -403,14 +403,94 @@ void srs_init_grumpkin_srs(const uint8_t* points_buf, const uint32_t* num_points
 static inline std::vector<uint8_t> fr_to_be32(const bb::fr& a);
 static inline bb::fr fr_from_be32(const uint8_t be[32]);
 
-// Provide malloc-backed buffer for FFI returns.
-static uint8_t* bb_malloc_copy(const std::vector<uint8_t>& src)
+// Provide malloc-backed buffers for FFI returns without ever reporting a
+// successful non-empty output through a null pointer.
+static bool bb_try_malloc_copy(const std::vector<uint8_t>& src, uint8_t*& out)
 {
-    if (src.empty()) return nullptr;
-    auto* out = static_cast<uint8_t*>(std::malloc(src.size()));
-    if (!out) return nullptr;
+    out = nullptr;
+    if (src.empty()) {
+        return true;
+    }
+    out = static_cast<uint8_t*>(std::malloc(src.size()));
+    if (out == nullptr) {
+        return false;
+    }
     std::memcpy(out, src.data(), src.size());
-    return out;
+    return true;
+}
+
+static int bb_write_output(const std::vector<uint8_t>& src, uint8_t** out_ptr, size_t* out_len)
+{
+    uint8_t* copy = nullptr;
+    if (out_ptr != nullptr && !bb_try_malloc_copy(src, copy)) {
+        *out_ptr = nullptr;
+        if (out_len != nullptr) {
+            *out_len = 0;
+        }
+        return BB_STATUS_INTERNAL;
+    }
+    if (out_ptr != nullptr) {
+        *out_ptr = copy;
+    }
+    if (out_len != nullptr) {
+        *out_len = src.size();
+    }
+    return BB_STATUS_OK;
+}
+
+static int bb_write_output_pair(const std::vector<uint8_t>& first,
+                                uint8_t** first_ptr,
+                                size_t* first_len,
+                                const std::vector<uint8_t>& second,
+                                uint8_t** second_ptr,
+                                size_t* second_len)
+{
+    uint8_t* first_copy = nullptr;
+    uint8_t* second_copy = nullptr;
+    if (first_ptr != nullptr && !bb_try_malloc_copy(first, first_copy)) {
+        if (first_ptr != nullptr) {
+            *first_ptr = nullptr;
+        }
+        if (second_ptr != nullptr) {
+            *second_ptr = nullptr;
+        }
+        if (first_len != nullptr) {
+            *first_len = 0;
+        }
+        if (second_len != nullptr) {
+            *second_len = 0;
+        }
+        return BB_STATUS_INTERNAL;
+    }
+    if (second_ptr != nullptr && !bb_try_malloc_copy(second, second_copy)) {
+        std::free(first_copy);
+        if (first_ptr != nullptr) {
+            *first_ptr = nullptr;
+        }
+        if (second_ptr != nullptr) {
+            *second_ptr = nullptr;
+        }
+        if (first_len != nullptr) {
+            *first_len = 0;
+        }
+        if (second_len != nullptr) {
+            *second_len = 0;
+        }
+        return BB_STATUS_INTERNAL;
+    }
+    if (first_ptr != nullptr) {
+        *first_ptr = first_copy;
+    }
+    if (second_ptr != nullptr) {
+        *second_ptr = second_copy;
+    }
+    if (first_len != nullptr) {
+        *first_len = first.size();
+    }
+    if (second_len != nullptr) {
+        *second_len = second.size();
+    }
+    return BB_STATUS_OK;
 }
 
 int bb_mega_honk_vk_from_acir(const uint8_t* acir, size_t acir_len, uint8_t** out_vk, size_t* out_vk_len)
@@ -426,9 +506,7 @@ int bb_mega_honk_vk_from_acir(const uint8_t* acir, size_t acir_len, uint8_t** ou
         ProverInstance prover_instance(builder);
         VerificationKey vk(prover_instance.get_precomputed());
         auto buf = to_buffer(vk);
-        if (out_vk) *out_vk = bb_malloc_copy(buf);
-        if (out_vk_len) *out_vk_len = buf.size();
-        return 0;
+        return bb_write_output(buf, out_vk, out_vk_len);
     } catch (const std::exception& e) {
         fprintf(stderr, "[bb][ERR] write_vk exception: %s\n", e.what());
         return 1;
@@ -505,11 +583,7 @@ int bb_mh_prove(const uint8_t* acir,
         auto proof = prover.construct_proof();
         auto proof_buf = to_buffer<true>(proof);
         auto vk_buf = to_buffer(*verification_key);
-        if (out_proof) *out_proof = bb_malloc_copy(proof_buf);
-        if (out_proof_len) *out_proof_len = proof_buf.size();
-        if (out_vk) *out_vk = bb_malloc_copy(vk_buf);
-        if (out_vk_len) *out_vk_len = vk_buf.size();
-        return 0;
+        return bb_write_output_pair(proof_buf, out_proof, out_proof_len, vk_buf, out_vk, out_vk_len);
     } catch (const std::exception& e) {
         fprintf(stderr, "[bb][ERR] prove exception: %s\n", e.what());
         return 1;
@@ -662,9 +736,7 @@ int bb_mh_public_inputs(const uint8_t* proof,
             out.insert(out.end(), be.begin(), be.end());
         }
 
-        if (out_ptr) *out_ptr = bb_malloc_copy(out);
-        if (out_len) *out_len = out.size();
-        return BB_STATUS_OK;
+        return bb_write_output(out, out_ptr, out_len);
     } catch (...) {
         return BB_STATUS_INTERNAL;
     }
@@ -719,26 +791,20 @@ int bb_batch_merge_public_inputs_k(size_t arity,
 int bb_batch_merge_leaf_vk(uint8_t** out_ptr, size_t* out_len)
 {
     const auto& vk = bb::batch_merge::embedded_leaf_merge_vk();
-    if (out_ptr) *out_ptr = bb_malloc_copy(vk);
-    if (out_len) *out_len = vk.size();
-    return BB_STATUS_OK;
+    return bb_write_output(vk, out_ptr, out_len);
 }
 
 int bb_batch_merge_agg_vk(uint8_t** out_ptr, size_t* out_len)
 {
     const auto& vk = bb::batch_merge::embedded_agg_merge_vk();
-    if (out_ptr) *out_ptr = bb_malloc_copy(vk);
-    if (out_len) *out_len = vk.size();
-    return BB_STATUS_OK;
+    return bb_write_output(vk, out_ptr, out_len);
 }
 
 int bb_batch_merge_leaf_vk_k(size_t arity, uint8_t** out_ptr, size_t* out_len)
 {
     try {
         const auto& vk = bb::batch_merge::embedded_leaf_merge_vk(arity);
-        if (out_ptr) *out_ptr = bb_malloc_copy(vk);
-        if (out_len) *out_len = vk.size();
-        return BB_STATUS_OK;
+        return bb_write_output(vk, out_ptr, out_len);
     } catch (...) {
         return BB_STATUS_WRONG_PROOF_TYPE;
     }
@@ -748,9 +814,7 @@ int bb_batch_merge_agg_vk_k(size_t arity, uint8_t** out_ptr, size_t* out_len)
 {
     try {
         const auto& vk = bb::batch_merge::embedded_agg_merge_vk(arity);
-        if (out_ptr) *out_ptr = bb_malloc_copy(vk);
-        if (out_len) *out_len = vk.size();
-        return BB_STATUS_OK;
+        return bb_write_output(vk, out_ptr, out_len);
     } catch (...) {
         return BB_STATUS_WRONG_PROOF_TYPE;
     }
@@ -857,9 +921,7 @@ int bb_uhz_public_inputs(const uint8_t* proof,
             out.insert(out.end(), be.begin(), be.end());
         }
 
-        if (out_ptr) *out_ptr = bb_malloc_copy(out);
-        if (out_len) *out_len = out.size();
-        return BB_STATUS_OK;
+        return bb_write_output(out, out_ptr, out_len);
     } catch (...) {
         return BB_STATUS_INTERNAL;
     }
@@ -934,13 +996,7 @@ int bb_uhz_leaf_vk(const uint8_t* vk, size_t vk_len, uint8_t** out_vk, size_t* o
         auto prover_instance = std::make_shared<ProverInstance>(builder);
         auto wrapped_vk = std::make_shared<bb::MegaFlavor::VerificationKey>(prover_instance->get_precomputed());
         auto wrapped_vk_bytes = to_buffer(*wrapped_vk);
-        if (out_vk) {
-            *out_vk = bb_malloc_copy(wrapped_vk_bytes);
-        }
-        if (out_vk_len) {
-            *out_vk_len = wrapped_vk_bytes.size();
-        }
-        return BB_STATUS_OK;
+        return bb_write_output(wrapped_vk_bytes, out_vk, out_vk_len);
     } catch (const std::exception& e) {
         fprintf(stderr, "[bb][ERR] ultra_zk leaf vk exception: %s\n", e.what());
         return BB_STATUS_INTERNAL;
@@ -1035,19 +1091,12 @@ int bb_uhz_leaf_wrap(const uint8_t* proof,
 
         auto wrapped_proof_bytes = to_buffer<true>(wrapped_proof);
         auto wrapped_vk_bytes = to_buffer(*wrapped_vk);
-        if (out_wrapped_proof) {
-            *out_wrapped_proof = bb_malloc_copy(wrapped_proof_bytes);
-        }
-        if (out_wrapped_proof_len) {
-            *out_wrapped_proof_len = wrapped_proof_bytes.size();
-        }
-        if (out_wrapped_vk) {
-            *out_wrapped_vk = bb_malloc_copy(wrapped_vk_bytes);
-        }
-        if (out_wrapped_vk_len) {
-            *out_wrapped_vk_len = wrapped_vk_bytes.size();
-        }
-        return BB_STATUS_OK;
+        return bb_write_output_pair(wrapped_proof_bytes,
+                                    out_wrapped_proof,
+                                    out_wrapped_proof_len,
+                                    wrapped_vk_bytes,
+                                    out_wrapped_vk,
+                                    out_wrapped_vk_len);
     } catch (const std::exception& e) {
         fprintf(stderr, "[bb][ERR] ultra_zk leaf wrap exception: %s\n", e.what());
         return BB_STATUS_INTERNAL;
@@ -1081,9 +1130,7 @@ int bb_batch_merge_leaf(const uint8_t* proof_a,
         return status;
     }
 
-    if (out_merged_proof) *out_merged_proof = bb_malloc_copy(merged_proof_bytes);
-    if (out_merged_proof_len) *out_merged_proof_len = merged_proof_bytes.size();
-    return BB_STATUS_OK;
+    return bb_write_output(merged_proof_bytes, out_merged_proof, out_merged_proof_len);
 }
 
 int bb_batch_merge_leaf_with_vk(const uint8_t* proof_a,
@@ -1115,11 +1162,12 @@ int bb_batch_merge_leaf_with_vk(const uint8_t* proof_a,
         return status;
     }
 
-    if (out_merged_proof) *out_merged_proof = bb_malloc_copy(merged_proof_bytes);
-    if (out_merged_proof_len) *out_merged_proof_len = merged_proof_bytes.size();
-    if (out_merged_vk) *out_merged_vk = bb_malloc_copy(merged_vk_bytes);
-    if (out_merged_vk_len) *out_merged_vk_len = merged_vk_bytes.size();
-    return BB_STATUS_OK;
+    return bb_write_output_pair(merged_proof_bytes,
+                                out_merged_proof,
+                                out_merged_proof_len,
+                                merged_vk_bytes,
+                                out_merged_vk,
+                                out_merged_vk_len);
 }
 
 int bb_batch_merge_many_with_vk(size_t arity,
@@ -1140,11 +1188,12 @@ int bb_batch_merge_many_with_vk(size_t arity,
         return status;
     }
 
-    if (out_merged_proof) *out_merged_proof = bb_malloc_copy(merged_proof_bytes);
-    if (out_merged_proof_len) *out_merged_proof_len = merged_proof_bytes.size();
-    if (out_merged_vk) *out_merged_vk = bb_malloc_copy(merged_vk_bytes);
-    if (out_merged_vk_len) *out_merged_vk_len = merged_vk_bytes.size();
-    return BB_STATUS_OK;
+    return bb_write_output_pair(merged_proof_bytes,
+                                out_merged_proof,
+                                out_merged_proof_len,
+                                merged_vk_bytes,
+                                out_merged_vk,
+                                out_merged_vk_len);
 }
 
 int bb_batch_merge_leaf_many(size_t arity,
@@ -1162,9 +1211,7 @@ int bb_batch_merge_leaf_many(size_t arity,
         return status;
     }
 
-    if (out_merged_proof) *out_merged_proof = bb_malloc_copy(merged_proof_bytes);
-    if (out_merged_proof_len) *out_merged_proof_len = merged_proof_bytes.size();
-    return BB_STATUS_OK;
+    return bb_write_output(merged_proof_bytes, out_merged_proof, out_merged_proof_len);
 }
 
 int bb_batch_merge_from_leaf_merges(const uint8_t* proof_a,
@@ -1182,9 +1229,7 @@ int bb_batch_merge_from_leaf_merges(const uint8_t* proof_a,
         return status;
     }
 
-    if (out_merged_proof) *out_merged_proof = bb_malloc_copy(merged_proof_bytes);
-    if (out_merged_proof_len) *out_merged_proof_len = merged_proof_bytes.size();
-    return BB_STATUS_OK;
+    return bb_write_output(merged_proof_bytes, out_merged_proof, out_merged_proof_len);
 }
 
 int bb_batch_merge_from_leaf_merges_with_vk(const uint8_t* proof_a,
@@ -1214,11 +1259,12 @@ int bb_batch_merge_from_leaf_merges_with_vk(const uint8_t* proof_a,
         return status;
     }
 
-    if (out_merged_proof) *out_merged_proof = bb_malloc_copy(merged_proof_bytes);
-    if (out_merged_proof_len) *out_merged_proof_len = merged_proof_bytes.size();
-    if (out_merged_vk) *out_merged_vk = bb_malloc_copy(merged_vk_bytes);
-    if (out_merged_vk_len) *out_merged_vk_len = merged_vk_bytes.size();
-    return BB_STATUS_OK;
+    return bb_write_output_pair(merged_proof_bytes,
+                                out_merged_proof,
+                                out_merged_proof_len,
+                                merged_vk_bytes,
+                                out_merged_vk,
+                                out_merged_vk_len);
 }
 
 int bb_batch_merge_from_leaf_merges_k(size_t arity,
@@ -1227,6 +1273,9 @@ int bb_batch_merge_from_leaf_merges_k(size_t arity,
                                       uint8_t** out_merged_proof,
                                       size_t* out_merged_proof_len)
 {
+    // Homogeneous fast path: every child must be a leaf-merge proof produced by
+    // the same `arity` circuit. Mixed child arities must use
+    // bb_batch_merge_many_with_vk and supply each child's actual VK.
     try {
         const auto& child_vk = bb::batch_merge::embedded_leaf_merge_vk(arity);
         std::vector<uint8_t> merged_proof_bytes;
@@ -1235,9 +1284,7 @@ int bb_batch_merge_from_leaf_merges_k(size_t arity,
         if (status != BB_STATUS_OK) {
             return status;
         }
-        if (out_merged_proof) *out_merged_proof = bb_malloc_copy(merged_proof_bytes);
-        if (out_merged_proof_len) *out_merged_proof_len = merged_proof_bytes.size();
-        return BB_STATUS_OK;
+        return bb_write_output(merged_proof_bytes, out_merged_proof, out_merged_proof_len);
     } catch (...) {
         return BB_STATUS_WRONG_PROOF_TYPE;
     }
@@ -1258,9 +1305,7 @@ int bb_batch_merge(const uint8_t* proof_a,
         return status;
     }
 
-    if (out_merged_proof) *out_merged_proof = bb_malloc_copy(merged_proof_bytes);
-    if (out_merged_proof_len) *out_merged_proof_len = merged_proof_bytes.size();
-    return BB_STATUS_OK;
+    return bb_write_output(merged_proof_bytes, out_merged_proof, out_merged_proof_len);
 }
 
 int bb_batch_merge_with_vk(const uint8_t* proof_a,
@@ -1290,11 +1335,12 @@ int bb_batch_merge_with_vk(const uint8_t* proof_a,
         return status;
     }
 
-    if (out_merged_proof) *out_merged_proof = bb_malloc_copy(merged_proof_bytes);
-    if (out_merged_proof_len) *out_merged_proof_len = merged_proof_bytes.size();
-    if (out_merged_vk) *out_merged_vk = bb_malloc_copy(merged_vk_bytes);
-    if (out_merged_vk_len) *out_merged_vk_len = merged_vk_bytes.size();
-    return BB_STATUS_OK;
+    return bb_write_output_pair(merged_proof_bytes,
+                                out_merged_proof,
+                                out_merged_proof_len,
+                                merged_vk_bytes,
+                                out_merged_vk,
+                                out_merged_vk_len);
 }
 
 int bb_batch_merge_k(size_t arity,
@@ -1303,6 +1349,9 @@ int bb_batch_merge_k(size_t arity,
                      uint8_t** out_merged_proof,
                      size_t* out_merged_proof_len)
 {
+    // Homogeneous fast path: every child must be an aggregate-merge proof
+    // produced by the same `arity` circuit. Mixed child arities must use
+    // bb_batch_merge_many_with_vk and supply each child's actual VK.
     try {
         const auto& child_vk = bb::batch_merge::embedded_agg_merge_vk(arity);
         std::vector<uint8_t> merged_proof_bytes;
@@ -1311,9 +1360,7 @@ int bb_batch_merge_k(size_t arity,
         if (status != BB_STATUS_OK) {
             return status;
         }
-        if (out_merged_proof) *out_merged_proof = bb_malloc_copy(merged_proof_bytes);
-        if (out_merged_proof_len) *out_merged_proof_len = merged_proof_bytes.size();
-        return BB_STATUS_OK;
+        return bb_write_output(merged_proof_bytes, out_merged_proof, out_merged_proof_len);
     } catch (...) {
         return BB_STATUS_WRONG_PROOF_TYPE;
     }
@@ -1366,11 +1413,7 @@ int bb_poseidon2_permutation_bn254(const uint8_t* inputs_be, size_t element_coun
             auto norm = out_state[i].from_montgomery_form();
             le_limbs_to_be32(norm.data, out.data() + i * 32);
         }
-        if (out_be)
-            *out_be = bb_malloc_copy(out);
-        if (out_len)
-            *out_len = out.size();
-        return 0;
+        return bb_write_output(out, out_be, out_len);
     } catch (...) {
         return 1;
     }
