@@ -461,17 +461,20 @@ fn ensure_crs_downloaded(out_dir: &Path) -> io::Result<()> {
 fn emit_embedded_crs_module(out_dir: &Path) -> io::Result<()> {
     let module = out_dir.join("crs_embedded.rs");
     let mut f = fs::File::create(&module)?;
+    // Keep the large blobs in statics. Public `const` byte slices make rustc
+    // serialize their values for downstream const evaluation, bloating crate
+    // metadata and every rlib that carries it.
     writeln!(
         f,
-        "pub const BN254_G1: &[u8] = include_bytes!(concat!(env!(\"OUT_DIR\"), \"/bb-crs/bn254_g1.dat\"));"
+        "pub static BN254_G1: &[u8] = include_bytes!(concat!(env!(\"OUT_DIR\"), \"/bb-crs/bn254_g1.dat\"));"
     )?;
     writeln!(
         f,
-        "pub const BN254_G2: &[u8] = include_bytes!(concat!(env!(\"OUT_DIR\"), \"/bb-crs/bn254_g2.dat\"));"
+        "pub static BN254_G2: &[u8] = include_bytes!(concat!(env!(\"OUT_DIR\"), \"/bb-crs/bn254_g2.dat\"));"
     )?;
     writeln!(
         f,
-        "pub const GRUMPKIN_G1: &[u8] = include_bytes!(concat!(env!(\"OUT_DIR\"), \"/bb-crs/grumpkin_g1.flat.dat\"));"
+        "pub static GRUMPKIN_G1: &[u8] = include_bytes!(concat!(env!(\"OUT_DIR\"), \"/bb-crs/grumpkin_g1.flat.dat\"));"
     )?;
     writeln!(f, "pub const BN254_G1_POINTS: u32 = {};", BN254_G1_POINTS)?;
     writeln!(f, "pub const GRUMPKIN_POINTS: u32 = {};", GRUMPKIN_POINTS)?;
