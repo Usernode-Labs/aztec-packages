@@ -1,14 +1,11 @@
 [package]
 name = "aztec-barretenberg-sys-rs"
-version = "4.2.0-aztecnr-rc.2-usernode.8"
+version = "4.2.0-aztecnr-rc.2-usernode.10"
 edition = "2021"
 license = "MIT"
 description = "Unsafe FFI bindings to a minimal Barretenberg C++ shim for MegaHonk and Schnorr."
 links = "aztec_barretenberg"
 
-[build-dependencies]
-cc = "1"
-cmake = "0.1"
-
 [dependencies]
+aztec-barretenberg-crypto-sys-rs = { path = "../aztec-barretenberg-crypto-sys-rs", version = "4.2.0-aztecnr-rc.2-usernode.10" }
 libc = "0.2"
