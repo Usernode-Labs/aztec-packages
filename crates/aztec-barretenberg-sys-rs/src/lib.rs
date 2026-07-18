@@ -3,7 +3,14 @@
 
 use libc::{c_int, size_t};
 
-// Low-level FFI to the C++ shim provided by the `bb_rust_api` static library.
+pub use aztec_barretenberg_crypto_sys_rs::{
+    bb_free, bb_grumpkin_compress, bb_grumpkin_decompress, bb_grumpkin_derive_pubkey,
+    bb_grumpkin_ec_add, bb_grumpkin_hash_to_curve, bb_grumpkin_msm, bb_poseidon2_permutation_bn254,
+    bb_schnorr_blake2s_sign, bb_schnorr_blake2s_verify_xy,
+};
+
+// Low-level prover/SRS FFI provided by `bb_rust_prover_api`. Primitive FFI is
+// re-exported above so existing users of this crate keep the same source API.
 
 pub mod crs_embedded {
     include!(concat!(env!("OUT_DIR"), "/crs_embedded.rs"));
@@ -188,73 +195,4 @@ extern "C" {
         out_merged_vk_len: *mut size_t,
     ) -> c_int;
 
-    pub fn bb_schnorr_blake2s_sign(
-        msg: *const u8,
-        msg_len: size_t,
-        sk32: *const u8,
-        sig64_out: *mut u8,
-    ) -> c_int;
-
-    pub fn bb_schnorr_blake2s_verify_xy(
-        msg: *const u8,
-        msg_len: size_t,
-        sig64: *const u8,
-        pkx32: *const u8,
-        pky32: *const u8,
-        out_ok: *mut bool,
-    ) -> c_int;
-    pub fn bb_grumpkin_derive_pubkey(
-        sk32: *const u8,
-        out_x_be: *mut u8,
-        out_y_be: *mut u8,
-    ) -> c_int;
-
-    pub fn bb_free(ptr: *mut u8);
-
-    // Additional FFI for blackbox solvers
-    pub fn bb_poseidon2_permutation_bn254(
-        inputs_be: *const u8,
-        element_count: size_t,
-        out_be: *mut *mut u8,
-        out_len: *mut size_t,
-    ) -> c_int;
-
-    pub fn bb_grumpkin_ec_add(
-        pk1_x_be: *const u8,
-        pk1_y_be: *const u8,
-        pk2_x_be: *const u8,
-        pk2_y_be: *const u8,
-        out_x_be: *mut u8,
-        out_y_be: *mut u8,
-    ) -> c_int;
-    pub fn bb_grumpkin_compress(
-        pk_x_be: *const u8,
-        pk_y_be: *const u8,
-        out_comp_be: *mut u8,
-    ) -> c_int;
-    pub fn bb_grumpkin_decompress(
-        comp_be: *const u8,
-        out_x_be: *mut u8,
-        out_y_be: *mut u8,
-    ) -> c_int;
-
-    pub fn bb_grumpkin_msm(
-        xs_be: *const u8,
-        ys_be: *const u8,
-        inf_flags: *const u8,
-        n_points: size_t,
-        scalars_lo_be16: *const u8,
-        scalars_hi_be16: *const u8,
-        out_x_be: *mut u8,
-        out_y_be: *mut u8,
-        out_infinite: *mut u8,
-    ) -> c_int;
-
-    pub fn bb_grumpkin_hash_to_curve(
-        inputs_be: *const u8,
-        n_elems: size_t,
-        domain: u32,
-        out_x_be: *mut u8,
-        out_y_be: *mut u8,
-    ) -> c_int;
 }

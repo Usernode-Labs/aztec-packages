@@ -25,6 +25,8 @@ fn collect_cpp_exports(text: &str) -> BTreeSet<String> {
             out.insert(format!("bb_{name}"));
         } else if let Some(name) = parse_symbol_after_prefix(line, "void bb_") {
             out.insert(format!("bb_{name}"));
+        } else if let Some(name) = parse_symbol_after_prefix(line, "void srs_") {
+            out.insert(format!("srs_{name}"));
         }
     }
     out
@@ -33,9 +35,11 @@ fn collect_cpp_exports(text: &str) -> BTreeSet<String> {
 fn collect_sys_decls(text: &str) -> BTreeSet<String> {
     let mut out = BTreeSet::new();
     for line in text.lines() {
-        if let Some(name) = line.trim_start().strip_prefix("pub fn bb_") {
-            if let Some(open) = name.find('(') {
-                out.insert(format!("bb_{}", name[..open].trim()));
+        for prefix in ["bb_", "srs_"] {
+            if let Some(name) = line.trim_start().strip_prefix(&format!("pub fn {prefix}")) {
+                if let Some(open) = name.find('(') {
+                    out.insert(format!("{prefix}{}", name[..open].trim()));
+                }
             }
         }
     }
@@ -55,7 +59,7 @@ fn collect_rs_ffi_uses(text: &str) -> BTreeSet<String> {
             .count();
         if len > 0 {
             let sym = &tail[..len];
-            if sym.starts_with("bb_") {
+            if sym.starts_with("bb_") || sym.starts_with("srs_") {
                 out.insert(sym.to_string());
             }
         }
@@ -67,23 +71,48 @@ fn collect_rs_ffi_uses(text: &str) -> BTreeSet<String> {
 #[test]
 fn ffi_surface_is_consistent() {
     let root = repo_root();
-    let cpp = fs::read_to_string(root.join("barretenberg/cpp/src/bb_rust_api.cpp"))
-        .expect("read bb_rust_api.cpp");
-    let sys = fs::read_to_string(root.join("crates/aztec-barretenberg-sys-rs/src/lib.rs"))
-        .expect("read sys lib.rs");
+    let crypto_cpp = fs::read_to_string(root.join("barretenberg/cpp/src/bb_rust_crypto_api.cpp"))
+        .expect("read bb_rust_crypto_api.cpp");
+    let prover_cpp = fs::read_to_string(root.join("barretenberg/cpp/src/bb_rust_prover_api.cpp"))
+        .expect("read bb_rust_prover_api.cpp");
+    let crypto_sys =
+        fs::read_to_string(root.join("crates/aztec-barretenberg-crypto-sys-rs/src/lib.rs"))
+            .expect("read crypto sys lib.rs");
+    let prover_sys = fs::read_to_string(root.join("crates/aztec-barretenberg-sys-rs/src/lib.rs"))
+        .expect("read prover sys lib.rs");
     let rs = fs::read_to_string(root.join("crates/aztec-barretenberg-rs/src/lib.rs"))
         .expect("read rust lib.rs");
 
-    let cpp_exports = collect_cpp_exports(&cpp);
-    let sys_decls = collect_sys_decls(&sys);
+    let crypto_cpp_exports = collect_cpp_exports(&crypto_cpp);
+    let prover_cpp_exports = collect_cpp_exports(&prover_cpp);
+    let crypto_sys_decls = collect_sys_decls(&crypto_sys);
+    let prover_sys_decls = collect_sys_decls(&prover_sys);
     let rust_uses = collect_rs_ffi_uses(&rs);
 
     assert_eq!(
-        cpp_exports, sys_decls,
-        "C++ bb_* exports and sys bb_* declarations diverged"
+        crypto_cpp_exports, crypto_sys_decls,
+        "crypto C++ bb_* exports and crypto sys declarations diverged"
     );
     assert_eq!(
-        sys_decls, rust_uses,
-        "sys bb_* declarations and safe Rust bb_* usage diverged"
+        prover_cpp_exports, prover_sys_decls,
+        "prover C++ bb_* exports and prover sys declarations diverged"
+    );
+
+    let overlap = crypto_sys_decls
+        .intersection(&prover_sys_decls)
+        .cloned()
+        .collect::<BTreeSet<_>>();
+    assert!(
+        overlap.is_empty(),
+        "crypto and prover sys declarations must stay disjoint: {overlap:?}"
+    );
+
+    let all_sys_decls = crypto_sys_decls
+        .union(&prover_sys_decls)
+        .cloned()
+        .collect::<BTreeSet<_>>();
+    assert_eq!(
+        all_sys_decls, rust_uses,
+        "split sys declarations and safe Rust bb_* usage diverged"
     );
 }

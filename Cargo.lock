@@ -266,8 +266,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c08606f8c3cbf4ce6ec8e28fb0014a2c086708fe954eaa885384a6165172e7e8"
 
 [[package]]
+name = "aztec-barretenberg-crypto-sys-rs"
+version = "4.2.0-aztecnr-rc.2-usernode.10"
+dependencies = [
+ "libc",
+]
+
+[[package]]
 name = "aztec-barretenberg-rs"
-version = "4.2.0-aztecnr-rc.2-usernode.8"
+version = "4.2.0-aztecnr-rc.2-usernode.10"
 dependencies = [
  "acir",
  "acir_field",
@@ -287,10 +294,9 @@ dependencies = [
 
 [[package]]
 name = "aztec-barretenberg-sys-rs"
-version = "4.2.0-aztecnr-rc.2-usernode.8"
+version = "4.2.0-aztecnr-rc.2-usernode.10"
 dependencies = [
- "cc",
- "cmake",
+ "aztec-barretenberg-crypto-sys-rs",
  "libc",
 ]
 
@@ -436,15 +442,6 @@ name = "cfg-if"
 version = "1.0.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9330f8b2ff13f34540b44e946ef35111825727b38d33286ef986142615121801"
-
-[[package]]
-name = "cmake"
-version = "0.1.57"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "75443c44cd6b379beb8c5b45d85d0773baf31cce901fe7bb252f4eff3008ef7d"
-dependencies = [
- "cc",
-]
 
 [[package]]
 name = "codespan"

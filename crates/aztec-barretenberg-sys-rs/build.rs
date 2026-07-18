@@ -10,6 +10,8 @@ const EXPECTED_GRUMPKIN_G1: u64 = 16_777_216; // bytes, 2^18 points
 const BN254_G1_POINTS: u32 = 2_097_153;
 const GRUMPKIN_POINTS: u32 = 262_144;
 const CRS_BASE_URL: &str = "https://crs.aztec.network";
+const PROVER_EXTERNAL_ARCHIVE: &str = "libbb-prover-external.a";
+const PROVER_SHIM_ARCHIVE: &str = "libbb_rust_prover_api.a";
 
 fn cmd_exists(name: &str) -> bool {
     Command::new(name)
@@ -90,7 +92,35 @@ fn infer_llvm_tool_from_compiler(compiler: &str, tool_name: &str) -> Option<Stri
 }
 
 fn built_lib_present(lib_dir: &Path) -> bool {
-    lib_dir.join("libbb-external.a").exists() && lib_dir.join("libbb_rust_api.a").exists()
+    lib_dir.join(PROVER_EXTERNAL_ARCHIVE).is_file() && lib_dir.join(PROVER_SHIM_ARCHIVE).is_file()
+}
+
+fn validate_crypto_archive_pair(prover_lib_dir: &Path, prover_source: &str) {
+    let crypto_lib_dir = env::var_os("DEP_AZTEC_BARRETENBERG_CRYPTO_LIB_DIR")
+        .map(PathBuf::from)
+        .expect("crypto sys dependency did not export its native library directory");
+    let crypto_source = env::var("DEP_AZTEC_BARRETENBERG_CRYPTO_ARCHIVE_SOURCE")
+        .expect("crypto sys dependency did not export its archive source");
+    let canonical_crypto = fs::canonicalize(&crypto_lib_dir).unwrap_or_else(|error| {
+        panic!(
+            "failed to resolve crypto archive directory {}: {error}",
+            crypto_lib_dir.display()
+        )
+    });
+    let canonical_prover = fs::canonicalize(prover_lib_dir).unwrap_or_else(|error| {
+        panic!(
+            "failed to resolve prover archive directory {}: {error}",
+            prover_lib_dir.display()
+        )
+    });
+
+    if canonical_crypto != canonical_prover || crypto_source != prover_source {
+        panic!(
+            "Barretenberg crypto/prover archives must be a matched pair, but crypto came from {crypto_source} at {} and prover came from {prover_source} at {}; extract both prebuilt assets into one cache directory, use one BB_LIB_DIR containing both pairs, or set BB_USE_PREBUILT=0 to build both locally",
+            canonical_crypto.display(),
+            canonical_prover.display()
+        );
+    }
 }
 
 fn relwithdebinfo_flags(language: &str) -> &'static str {
@@ -188,25 +218,21 @@ fn download_with(cmd: &str, url: &str, dest: &Path) -> io::Result<bool> {
         "wget" => Command::new("wget").arg("-qO").arg(dest).arg(url).status(),
         _ => return Ok(false),
     }
-    .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("spawn {}: {}", cmd, e)))?;
+    .map_err(|e| io::Error::other(format!("spawn {}: {}", cmd, e)))?;
     Ok(status.success())
 }
 
 fn download(url: &str, dest: &Path) -> io::Result<()> {
-    if cmd_exists("curl") {
-        if download_with("curl", url, dest)? {
-            return Ok(());
-        }
+    if cmd_exists("curl") && download_with("curl", url, dest)? {
+        return Ok(());
     }
-    if cmd_exists("wget") {
-        if download_with("wget", url, dest)? {
-            return Ok(());
-        }
+    if cmd_exists("wget") && download_with("wget", url, dest)? {
+        return Ok(());
     }
-    Err(io::Error::new(
-        io::ErrorKind::Other,
-        format!("failed to download {} (need curl or wget)", url),
-    ))
+    Err(io::Error::other(format!(
+        "failed to download {} (need curl or wget)",
+        url
+    )))
 }
 
 fn extract_tar_gz(archive: &Path, dest: &Path) -> io::Result<()> {
@@ -219,10 +245,7 @@ fn extract_tar_gz(archive: &Path, dest: &Path) -> io::Result<()> {
         .arg(dest)
         .status()?;
     if !status.success() {
-        return Err(io::Error::new(
-            io::ErrorKind::Other,
-            "tar extraction failed",
-        ));
+        return Err(io::Error::other("tar extraction failed"));
     }
     Ok(())
 }
@@ -269,7 +292,7 @@ fn fetch_prebuilt(version_tag: &str, target: &str) -> io::Result<Prebuilt> {
 
     fs::create_dir_all(&cache_root)?;
     // Strictly fetch assets for the crate version tag
-    let asset = format!("barretenberg-{}-{}.tar.gz", version_tag, target);
+    let asset = format!("barretenberg-prover-{}-{}.tar.gz", version_tag, target);
     let url = format!("{}/download/{}/{}", base_url, version_tag, asset);
     let archive_path = cache_root.join(&asset);
     println!("cargo:warning=Downloading prebuilt Barretenberg: {}", url);
@@ -284,14 +307,12 @@ fn fetch_prebuilt(version_tag: &str, target: &str) -> io::Result<Prebuilt> {
         lib: lib_dir,
     };
     if !built_lib_present(&pb.lib) {
-        return Err(io::Error::new(
-            io::ErrorKind::Other,
-            "prebuilt archive missing lib/libbb-external.a or lib/libbb_rust_api.a",
+        return Err(io::Error::other(
+            "prebuilt archive missing split Barretenberg prover archives",
         ));
     }
     if !prebuilt_headers_present(&pb.root) {
-        return Err(io::Error::new(
-            io::ErrorKind::Other,
+        return Err(io::Error::other(
             "prebuilt archive missing Barretenberg headers or msgpack public headers",
         ));
     }
@@ -387,27 +408,24 @@ fn download_crs_file(
             .arg("-o")
             .arg(dest)
             .status()
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("spawn curl: {}", e)))?;
+            .map_err(|e| io::Error::other(format!("spawn curl: {}", e)))?;
         if !status.success() {
-            return Err(io::Error::new(
-                io::ErrorKind::Other,
-                format!("curl range download failed for {}", url),
-            ));
+            return Err(io::Error::other(format!(
+                "curl range download failed for {}",
+                url
+            )));
         }
     } else {
         download(url, dest)?;
     }
     let len = fs::metadata(dest)?.len();
     if len != expected_len {
-        return Err(io::Error::new(
-            io::ErrorKind::Other,
-            format!(
-                "CRS download {} had length {} (expected {})",
-                dest.display(),
-                len,
-                expected_len
-            ),
-        ));
+        return Err(io::Error::other(format!(
+            "CRS download {} had length {} (expected {})",
+            dest.display(),
+            len,
+            expected_len
+        )));
     }
     Ok(())
 }
@@ -537,7 +555,7 @@ fn ensure_barretenberg_built(build_dir: &Path) {
     validate_relwithdebinfo_flags(build_dir);
 
     println!(
-        "cargo:warning=Building Barretenberg targets (bb-external, bb_rust_api)
+        "cargo:warning=Building Barretenberg targets (bb-prover-external, bb_rust_prover_api)
   …"
     );
     let mut build = Command::new("cmake");
@@ -546,9 +564,9 @@ fn ensure_barretenberg_built(build_dir: &Path) {
         .arg("--build")
         .arg(build_dir)
         .arg("--target")
-        .arg("bb-external")
+        .arg("bb-prover-external")
         .arg("--target")
-        .arg("bb_rust_api");
+        .arg("bb_rust_prover_api");
     run(build);
 
     let lib_dir = build_dir.join("lib");
@@ -575,6 +593,8 @@ fn main() {
     println!("cargo:rerun-if-env-changed=BB_CRS_URL_GRUMPKIN_G1");
     println!("cargo:rerun-if-env-changed=CC");
     println!("cargo:rerun-if-env-changed=CXX");
+    println!("cargo:rerun-if-env-changed=AR");
+    println!("cargo:rerun-if-env-changed=RANLIB");
 
     // Basic paths
     let repo_root = repo_root();
@@ -588,10 +608,18 @@ fn main() {
     let env_cxx = env::var("CXX").ok();
 
     // Resolve prebuilt usage decision
-    let use_prebuilt = env::var("BB_USE_PREBUILT")
+    let requested_prebuilt = env::var("BB_USE_PREBUILT")
         .ok()
         .map(|s| s == "1" || s.eq_ignore_ascii_case("true"))
         .unwrap_or(true);
+    let crypto_archive_source = env::var("DEP_AZTEC_BARRETENBERG_CRYPTO_ARCHIVE_SOURCE")
+        .expect("crypto sys dependency did not export its archive source");
+    let use_prebuilt = requested_prebuilt && crypto_archive_source != "local";
+    if requested_prebuilt && !use_prebuilt {
+        println!(
+            "cargo:warning=Crypto archive fell back to a local build; building the matched prover archive locally"
+        );
+    }
     let allow_fallback = env::var("BB_PREBUILT_ALLOW_BUILD_FALLBACK")
         .ok()
         .map(|s| s == "1" || s.eq_ignore_ascii_case("true"))
@@ -602,7 +630,6 @@ fn main() {
     });
     let mut bb_lib_dir = env_bb_lib
         .clone()
-        .map(|p| p)
         .unwrap_or_else(|| bb_build_dir.join("lib"));
 
     let mut using_downloaded_prebuilt = false;
@@ -621,6 +648,12 @@ fn main() {
                     root.display()
                 );
             }
+        }
+        if !built_lib_present(&bb_lib_dir) {
+            panic!(
+                "BB_LIB_DIR={} is missing split Barretenberg prover archives; full consumers must extract both crypto and prover assets into the same directory",
+                bb_lib_dir.display()
+            );
         }
         println!(
             "cargo:warning=Using BB_LIB_DIR={} (no build)",
@@ -648,12 +681,11 @@ fn main() {
                 }
                 Err(e) => {
                     if allow_fallback {
-                        println!(
-                            "cargo:warning=Prebuilt unavailable ({}); falling back to local build",
-                            e
+                        panic!(
+                            "Prover prebuilt unavailable ({e}) after the crypto prebuilt was selected. Set BB_USE_PREBUILT=0 to build a matched local pair."
                         );
                     } else {
-                        panic!("Failed to fetch prebuilt ({}). Set BB_PREBUILT_ALLOW_BUILD_FALLBACK=1 to build locally or set BB_LIB_DIR.", e);
+                        panic!("Failed to fetch prover prebuilt ({e}). Set BB_USE_PREBUILT=0 to build a matched local pair, or set BB_LIB_DIR to a directory containing both split archive pairs.");
                     }
                 }
             }
@@ -685,6 +717,15 @@ fn main() {
         }
     }
 
+    let archive_source = if env_bb_lib.is_some() {
+        "explicit"
+    } else if using_downloaded_prebuilt {
+        "prebuilt"
+    } else {
+        "local"
+    };
+    validate_crypto_archive_pair(&bb_lib_dir, archive_source);
+
     let local_metadata_build_dir = env_bb_lib
         .as_deref()
         .and_then(|p| p.parent())
@@ -699,45 +740,47 @@ fn main() {
     // Rebuild if static archives change (or shim source if we build locally)
     println!(
         "cargo:rerun-if-changed={}",
-        bb_lib_dir.join("libbb-external.a").display()
+        bb_lib_dir.join(PROVER_EXTERNAL_ARCHIVE).display()
     );
     println!(
         "cargo:rerun-if-changed={}",
-        bb_lib_dir.join("libbb_rust_api.a").display()
+        bb_lib_dir.join(PROVER_SHIM_ARCHIVE).display()
     );
 
-    // bb_rust_api must come from the same Barretenberg build (or prebuilt package) as libbb-external.
-    // Building a local shim against a different Barretenberg archive is unsafe (ABI/allocator mismatches).
-    let shim_archive = bb_lib_dir.join("libbb_rust_api.a");
+    // The prover shim must come from the same Barretenberg build (or prebuilt package) as
+    // the prover archive. Building a local shim against a different archive is unsafe
+    // (ABI/allocator mismatches).
+    let shim_archive = bb_lib_dir.join(PROVER_SHIM_ARCHIVE);
 
     if !shim_archive.exists() {
         panic!(
-            "libbb_rust_api.a not found in {}. Provide a BB_LIB_DIR containing it, or enable local build fallback (BB_PREBUILT_ALLOW_BUILD_FALLBACK=1).",
+            "{PROVER_SHIM_ARCHIVE} not found in {}. Provide a BB_LIB_DIR containing it, or enable local build fallback (BB_PREBUILT_ALLOW_BUILD_FALLBACK=1).",
             bb_lib_dir.display()
         );
     }
     if using_downloaded_prebuilt {
         println!(
-            "cargo:warning=Using downloaded prebuilt bb_rust_api from {}",
+            "cargo:warning=Using downloaded prebuilt bb_rust_prover_api from {}",
             shim_archive.display()
         );
     } else {
         println!(
-            "cargo:warning=Using local CMake-built bb_rust_api from {}",
+            "cargo:warning=Using local CMake-built bb_rust_prover_api from {}",
             shim_archive.display()
         );
     }
-    println!("cargo:rustc-link-lib=static=bb_rust_api");
+    println!("cargo:rustc-link-lib=static=bb_rust_prover_api");
 
     // Download CRS assets and generate the embedded module consumed via include_bytes!.
     ensure_crs_downloaded(&out_dir)
         .expect("failed to download CRS assets for embedded initialization");
     emit_embedded_crs_module(&out_dir).expect("failed to write embedded CRS module");
 
-    // Link against the all-in-one static archive produced by 4.2.0 and the Usernode shim.
+    // Link only the prover side here. The crypto sys dependency owns and bundles the
+    // disjoint primitive archive, keeping crypto-only consumers off the prover graph.
     println!("cargo:rustc-link-search=native={}", bb_lib_dir.display());
     let target_os = env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
-    println!("cargo:rustc-link-lib=static=bb-external");
+    println!("cargo:rustc-link-lib=static=bb-prover-external");
 
     // Math + pthread everywhere
     println!("cargo:rustc-link-lib=dylib=m");

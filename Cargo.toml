@@ -1,5 +1,6 @@
 [workspace]
 members = [
+  "crates/aztec-barretenberg-crypto-sys-rs",
   "crates/aztec-barretenberg-sys-rs",
   "crates/aztec-barretenberg-rs",
 ]
