@@ -78,9 +78,10 @@ jobs:
           curl -fsSL https://apt.llvm.org/llvm-snapshot.gpg.key | gpg --dearmor | sudo tee /usr/share/keyrings/llvm-snapshot.gpg > /dev/null
           echo "deb [signed-by=/usr/share/keyrings/llvm-snapshot.gpg] http://apt.llvm.org/${codename}/ llvm-toolchain-${codename}-19 main" | sudo tee /etc/apt/sources.list.d/llvm-19.list
           sudo apt-get update
-          sudo apt-get install -y clang-19 lld-19
+          sudo apt-get install -y clang-19 lld-19 llvm-19
           echo "CC=clang-19" >> $GITHUB_ENV
           echo "CXX=clang++-19" >> $GITHUB_ENV
+          echo "BB_OBJCOPY=$(command -v llvm-objcopy-19)" >> $GITHUB_ENV
 
       - name: Install aarch64 cross toolchain (Linux, arm64 target)
         if: runner.os == 'Linux' && contains(matrix.target, 'aarch64') && !contains(matrix.target, 'android')
@@ -99,6 +100,7 @@ jobs:
           echo "PATH=$(brew --prefix llvm@19)/bin:$PATH" >> $GITHUB_ENV
           echo "CC=clang" >> $GITHUB_ENV
           echo "CXX=clang++" >> $GITHUB_ENV
+          echo "BB_OBJCOPY=$(brew --prefix llvm@19)/bin/llvm-objcopy" >> $GITHUB_ENV
           echo "SDKROOT=$(xcrun --sdk macosx --show-sdk-path)" >> $GITHUB_ENV
           echo "MACOSX_DEPLOYMENT_TARGET=13.0" >> $GITHUB_ENV
 
@@ -111,6 +113,7 @@ jobs:
           echo "IOS_SIM_SDK=$(xcrun --sdk iphonesimulator --show-sdk-path)" >> $GITHUB_ENV
           echo "CC=$(brew --prefix llvm@19)/bin/clang" >> $GITHUB_ENV
           echo "CXX=$(brew --prefix llvm@19)/bin/clang++" >> $GITHUB_ENV
+          echo "BB_OBJCOPY=$(brew --prefix llvm@19)/bin/llvm-objcopy" >> $GITHUB_ENV
           echo "CMAKE_OSX_SYSROOT=$(xcrun --sdk iphonesimulator --show-sdk-path)" >> $GITHUB_ENV
           echo "CMAKE_OSX_ARCHITECTURES=arm64" >> $GITHUB_ENV
           echo "CMAKE_OSX_DEPLOYMENT_TARGET=13.0" >> $GITHUB_ENV
@@ -124,6 +127,7 @@ jobs:
           echo "IOS_SDK=$(xcrun --sdk iphoneos --show-sdk-path)" >> $GITHUB_ENV
           echo "CC=$(brew --prefix llvm@19)/bin/clang" >> $GITHUB_ENV
           echo "CXX=$(brew --prefix llvm@19)/bin/clang++" >> $GITHUB_ENV
+          echo "BB_OBJCOPY=$(brew --prefix llvm@19)/bin/llvm-objcopy" >> $GITHUB_ENV
           echo "CMAKE_OSX_SYSROOT=$(xcrun --sdk iphoneos --show-sdk-path)" >> $GITHUB_ENV
           echo "CMAKE_OSX_ARCHITECTURES=arm64" >> $GITHUB_ENV
           echo "CMAKE_OSX_DEPLOYMENT_TARGET=13.0" >> $GITHUB_ENV
@@ -217,6 +221,7 @@ jobs:
           fi
           echo "CC=$ndk_dir/toolchains/llvm/prebuilt/linux-x86_64/bin/clang" >> $GITHUB_ENV
           echo "CXX=$ndk_dir/toolchains/llvm/prebuilt/linux-x86_64/bin/clang++" >> $GITHUB_ENV
+          echo "BB_OBJCOPY=$ndk_dir/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-objcopy" >> $GITHUB_ENV
 
       - name: Configure (CMake + Ninja, Android)
         if: runner.os == 'Linux' && contains(matrix.target, 'linux-android')
@@ -417,7 +422,9 @@ jobs:
           target='${{ matrix.target }}'
           version='${{ env.VERSION_TAG }}'
           staging="staging"
+          debug_staging="staging-debug"
           rm -rf "$staging"
+          rm -rf "$debug_staging"
           mkdir -p "$staging/lib" "$staging/include" "$staging/include-deps/msgpack"
           cp -a barretenberg/cpp/src/. "$staging/include/"
           cp -a build/_deps/msgpack-c/src/msgpack-c/include/. "$staging/include-deps/msgpack/" || true
@@ -435,13 +442,39 @@ jobs:
               exit 1
             fi
           done
+          # Keep the unstripped RelWithDebInfo archives as a separate diagnostic
+          # asset, while normal consumers get the exact same optimized objects
+          # without their native DWARF sections.
+          cp -a "$staging" "$debug_staging"
+          if [ -z "${BB_OBJCOPY:-}" ] || [ ! -x "$BB_OBJCOPY" ]; then
+            echo "BB_OBJCOPY does not name an executable LLVM objcopy" >&2
+            exit 1
+          fi
+          unstripped_bytes=0
+          stripped_bytes=0
+          for lib in libbb_rust_api.a libbb-external.a; do
+            archive="$staging/lib/$lib"
+            stripped="$staging/lib/$lib.stripped"
+            unstripped_bytes=$((unstripped_bytes + $(wc -c < "$archive")))
+            "$BB_OBJCOPY" --strip-debug "$archive" "$stripped"
+            mv "$stripped" "$archive"
+            stripped_bytes=$((stripped_bytes + $(wc -c < "$archive")))
+          done
+          if [ "$stripped_bytes" -ge "$unstripped_bytes" ]; then
+            echo "Stripping native debug sections did not reduce archive size" >&2
+            exit 1
+          fi
+          echo "Native archives: $unstripped_bytes bytes -> $stripped_bytes bytes"
           nm -g "$staging/lib/libbb_rust_api.a" | grep -q 'srs_init_srs' || \
             { echo "ERROR: libbb_rust_api.a missing srs_init_srs" >&2; exit 1; }
           nm -g "$staging/lib/libbb_rust_api.a" | grep -q 'srs_init_grumpkin_srs' || \
             { echo "ERROR: libbb_rust_api.a missing srs_init_grumpkin_srs" >&2; exit 1; }
           echo "$version" > "$staging/VERSION"
+          echo "$version" > "$debug_staging/VERSION"
           asset="barretenberg-${version}-${target}.tar.gz"
+          debug_asset="barretenberg-debug-${version}-${target}.tar.gz"
           tar -czf "$asset" -C "$staging" .
+          tar -czf "$debug_asset" -C "$debug_staging" .
           # Sanity check: ensure expected files exist inside the tarball (avoid SIGPIPE with pipefail)
           listfile=$(mktemp -t tarlist.XXXXXX)
           tar -tzf "$asset" > "$listfile"
@@ -454,12 +487,15 @@ jobs:
           ! grep -Eq '^(\./)?include-deps/tracy/' "$listfile" || { echo "ERROR: $asset unexpectedly contains include-deps/tracy" >&2; cat "$listfile" >&2; exit 1; }
           rm -f "$listfile"
           echo "ASSET=$asset" >> $GITHUB_ENV
+          echo "DEBUG_ASSET=$debug_asset" >> $GITHUB_ENV
 
       - name: Upload artifact
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: ${{ env.ASSET }}
-          path: ${{ env.ASSET }}
+          path: |
+            ${{ env.ASSET }}
+            ${{ env.DEBUG_ASSET }}
           retention-days: 7
 
       # No separate 'latest' artifact; consumers fetch versioned assets by crate version
