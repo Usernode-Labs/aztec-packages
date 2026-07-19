@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: Tag or version string to build/publish (e.g., v2.0.3-usernode.1)
+        description: Release tag to build/publish, including the leading v (e.g., v2.0.3-usernode.1)
         required: false
         default: ""
       publish:
@@ -56,13 +56,36 @@ jobs:
       - name: Resolve crate version
         shell: bash
         run: |
+          crypto_crate_version=$(awk -F '"' '/^version[[:space:]]*=/ { print $2; exit }' crates/aztec-barretenberg-crypto-sys-rs/Cargo.toml)
+          prover_crate_version=$(awk -F '"' '/^version[[:space:]]*=/ { print $2; exit }' crates/aztec-barretenberg-sys-rs/Cargo.toml)
+          wrapper_crate_version=$(awk -F '"' '/^version[[:space:]]*=/ { print $2; exit }' crates/aztec-barretenberg-rs/Cargo.toml)
+          if [ -z "$crypto_crate_version" ] || [ -z "$prover_crate_version" ] || \
+             [ -z "$wrapper_crate_version" ]; then
+            echo "Failed to parse one or more Barretenberg crate versions" >&2
+            exit 1
+          fi
+          if [ "$crypto_crate_version" != "$prover_crate_version" ] || \
+             [ "$wrapper_crate_version" != "$prover_crate_version" ]; then
+            echo "Barretenberg crate versions must match: crypto=$crypto_crate_version prover=$prover_crate_version wrapper=$wrapper_crate_version" >&2
+            exit 1
+          fi
           if [ -n "${{ inputs.version }}" ]; then
             version_tag='${{ inputs.version }}'
           elif [[ "${{ startsWith(github.ref, 'refs/tags/') }}" == "true" ]]; then
             version_tag='${{ github.ref_name }}'
           else
-            crate_version=$(sed -n 's/^version\s*=\s*"\(.*\)"/\1/p' crates/aztec-barretenberg-sys-rs/Cargo.toml | head -n1)
-            version_tag="v${crate_version}"
+            version_tag="v${prover_crate_version}"
+          fi
+          case "$version_tag" in
+            v*) ;;
+            *)
+              echo "Prebuilt version must be a release tag beginning with v: $version_tag" >&2
+              exit 1
+              ;;
+          esac
+          if [ "${version_tag#v}" != "$prover_crate_version" ]; then
+            echo "Requested prebuilt version $version_tag does not match crate version v$prover_crate_version" >&2
+            exit 1
           fi
           echo "CRATE_VERSION=${version_tag#v}" >> $GITHUB_ENV
           echo "VERSION_TAG=${version_tag}" >> $GITHUB_ENV
@@ -78,9 +101,10 @@ jobs:
           curl -fsSL https://apt.llvm.org/llvm-snapshot.gpg.key | gpg --dearmor | sudo tee /usr/share/keyrings/llvm-snapshot.gpg > /dev/null
           echo "deb [signed-by=/usr/share/keyrings/llvm-snapshot.gpg] http://apt.llvm.org/${codename}/ llvm-toolchain-${codename}-19 main" | sudo tee /etc/apt/sources.list.d/llvm-19.list
           sudo apt-get update
-          sudo apt-get install -y clang-19 lld-19
+          sudo apt-get install -y clang-19 lld-19 llvm-19
           echo "CC=clang-19" >> $GITHUB_ENV
           echo "CXX=clang++-19" >> $GITHUB_ENV
+          echo "BB_OBJCOPY=$(command -v llvm-objcopy-19)" >> $GITHUB_ENV
 
       - name: Install aarch64 cross toolchain (Linux, arm64 target)
         if: runner.os == 'Linux' && contains(matrix.target, 'aarch64') && !contains(matrix.target, 'android')
@@ -99,6 +123,7 @@ jobs:
           echo "PATH=$(brew --prefix llvm@19)/bin:$PATH" >> $GITHUB_ENV
           echo "CC=clang" >> $GITHUB_ENV
           echo "CXX=clang++" >> $GITHUB_ENV
+          echo "BB_OBJCOPY=$(brew --prefix llvm@19)/bin/llvm-objcopy" >> $GITHUB_ENV
           echo "SDKROOT=$(xcrun --sdk macosx --show-sdk-path)" >> $GITHUB_ENV
           echo "MACOSX_DEPLOYMENT_TARGET=13.0" >> $GITHUB_ENV
 
@@ -111,6 +136,7 @@ jobs:
           echo "IOS_SIM_SDK=$(xcrun --sdk iphonesimulator --show-sdk-path)" >> $GITHUB_ENV
           echo "CC=$(brew --prefix llvm@19)/bin/clang" >> $GITHUB_ENV
           echo "CXX=$(brew --prefix llvm@19)/bin/clang++" >> $GITHUB_ENV
+          echo "BB_OBJCOPY=$(brew --prefix llvm@19)/bin/llvm-objcopy" >> $GITHUB_ENV
           echo "CMAKE_OSX_SYSROOT=$(xcrun --sdk iphonesimulator --show-sdk-path)" >> $GITHUB_ENV
           echo "CMAKE_OSX_ARCHITECTURES=arm64" >> $GITHUB_ENV
           echo "CMAKE_OSX_DEPLOYMENT_TARGET=13.0" >> $GITHUB_ENV
@@ -124,6 +150,7 @@ jobs:
           echo "IOS_SDK=$(xcrun --sdk iphoneos --show-sdk-path)" >> $GITHUB_ENV
           echo "CC=$(brew --prefix llvm@19)/bin/clang" >> $GITHUB_ENV
           echo "CXX=$(brew --prefix llvm@19)/bin/clang++" >> $GITHUB_ENV
+          echo "BB_OBJCOPY=$(brew --prefix llvm@19)/bin/llvm-objcopy" >> $GITHUB_ENV
           echo "CMAKE_OSX_SYSROOT=$(xcrun --sdk iphoneos --show-sdk-path)" >> $GITHUB_ENV
           echo "CMAKE_OSX_ARCHITECTURES=arm64" >> $GITHUB_ENV
           echo "CMAKE_OSX_DEPLOYMENT_TARGET=13.0" >> $GITHUB_ENV
@@ -217,6 +244,7 @@ jobs:
           fi
           echo "CC=$ndk_dir/toolchains/llvm/prebuilt/linux-x86_64/bin/clang" >> $GITHUB_ENV
           echo "CXX=$ndk_dir/toolchains/llvm/prebuilt/linux-x86_64/bin/clang++" >> $GITHUB_ENV
+          echo "BB_OBJCOPY=$ndk_dir/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-objcopy" >> $GITHUB_ENV
 
       - name: Configure (CMake + Ninja, Android)
         if: runner.os == 'Linux' && contains(matrix.target, 'linux-android')
@@ -358,9 +386,13 @@ jobs:
             -DBB_ENABLE_BENCH=OFF \
             -DBB_ENABLE_TESTS=OFF
 
-      - name: Build static libraries (minimal set)
+      - name: Build split static libraries
         run: |
-          cmake --build build --target bb-external bb_rust_api
+          cmake --build build --target \
+            bb-crypto-external \
+            bb_rust_crypto_api \
+            bb-prover-external \
+            bb_rust_prover_api
 
       - name: Verify PIC flags (Linux)
         if: runner.os == 'Linux' && !contains(matrix.target, 'android')
@@ -368,8 +400,10 @@ jobs:
         run: |
           set -euo pipefail
           libs=(
-            libbb-external.a
-            libbb_rust_api.a
+            libbb-crypto-external.a
+            libbb_rust_crypto_api.a
+            libbb-prover-external.a
+            libbb_rust_prover_api.a
           )
           for lib in "${libs[@]}"; do
             path="build/lib/${lib}"
@@ -377,38 +411,44 @@ jobs:
               echo "Missing library for PIC verification: $path" >&2
               exit 1
             fi
-            if objdump -f "$path" | grep -q "EXEC_P"; then
+            flags=$(mktemp -t objdump-flags.XXXXXX)
+            objdump -f "$path" > "$flags"
+            if grep -q "EXEC_P" "$flags"; then
               echo "Found EXEC_P flag in $lib" >&2
-              objdump -f "$path" >&2
+              cat "$flags" >&2
               exit 1
             fi
-            if ! objdump -f "$path" | grep -q "HAS_RELOC"; then
+            if ! grep -q "HAS_RELOC" "$flags"; then
               echo "Missing HAS_RELOC flag in $lib" >&2
-              objdump -f "$path" >&2
+              cat "$flags" >&2
               exit 1
             fi
+            rm -f "$flags"
           done
 
-      - name: Build C++ shim archive (macOS fallback)
+      - name: Build C++ shim archives (macOS fallback)
         if: runner.os == 'macOS' && !contains(matrix.target, 'ios')
         shell: bash
         run: |
           set -euxo pipefail
-          # Ensure libbb_rust_api.a exists even if CMake target did not produce it
-          if [ -f build/lib/libbb_rust_api.a ]; then
-            echo "libbb_rust_api.a already present"
-            exit 0
-          fi
           cxx="${CXX:-clang++}"
           inc1="barretenberg/cpp/src"
           inc2="build/_deps/msgpack-c/src/msgpack-c/include"
           inc3="build/_deps/tracy-src/public"
-          o="build/bb_rust_api.o"
-          "$cxx" -std=c++20 -fPIC -fvisibility=hidden -O2 -Wno-error \
-            -I"$inc1" -I"$inc2" -I"$inc3" \
-            -c barretenberg/cpp/src/bb_rust_api.cpp -o "$o"
           mkdir -p build/lib
-          libtool -static -o build/lib/libbb_rust_api.a "$o"
+          for component in crypto prover; do
+            archive="build/lib/libbb_rust_${component}_api.a"
+            if [ -f "$archive" ]; then
+              echo "$(basename "$archive") already present"
+              continue
+            fi
+            source="barretenberg/cpp/src/bb_rust_${component}_api.cpp"
+            object="build/bb_rust_${component}_api.o"
+            "$cxx" -std=c++20 -fPIC -fvisibility=hidden -O2 -Wno-error \
+              -I"$inc1" -I"$inc2" -I"$inc3" \
+              -c "$source" -o "$object"
+            libtool -static -o "$archive" "$object"
+          done
 
       - name: Package prebuilts
         shell: bash
@@ -416,50 +456,143 @@ jobs:
           set -euxo pipefail
           target='${{ matrix.target }}'
           version='${{ env.VERSION_TAG }}'
-          staging="staging"
-          rm -rf "$staging"
-          mkdir -p "$staging/lib" "$staging/include" "$staging/include-deps/msgpack"
-          cp -a barretenberg/cpp/src/. "$staging/include/"
-          cp -a build/_deps/msgpack-c/src/msgpack-c/include/. "$staging/include-deps/msgpack/" || true
+          crypto_staging="staging-crypto"
+          prover_staging="staging-prover"
+          crypto_debug_staging="staging-crypto-debug"
+          prover_debug_staging="staging-prover-debug"
+          rm -rf \
+            "$crypto_staging" \
+            "$prover_staging" \
+            "$crypto_debug_staging" \
+            "$prover_debug_staging"
+          mkdir -p \
+            "$crypto_staging/lib" \
+            "$prover_staging/lib" \
+            "$prover_staging/include" \
+            "$prover_staging/include-deps/msgpack"
+          cp -a barretenberg/cpp/src/. "$prover_staging/include/"
+          cp -a build/_deps/msgpack-c/src/msgpack-c/include/. "$prover_staging/include-deps/msgpack/" || true
           # Keep include-deps explicit for Cargo metadata, and mirror msgpack into include/
           # so Barretenberg public headers remain self-contained for downstream C++ shims.
-          cp -a build/_deps/msgpack-c/src/msgpack-c/include/. "$staging/include/" || true
-          # Copy only the libs required by the Rust shim (including shim)
-          for lib in \
-            libbb_rust_api.a \
-            libbb-external.a; do
-            if [ -f build/lib/$lib ]; then
-              cp -a build/lib/$lib "$staging/lib/"
-            else
-              echo "Missing expected library: $lib" >&2
+          cp -a build/_deps/msgpack-c/src/msgpack-c/include/. "$prover_staging/include/" || true
+          for lib in libbb-crypto-external.a libbb_rust_crypto_api.a; do
+            if [ ! -f "build/lib/$lib" ]; then
+              echo "Missing expected crypto library: $lib" >&2
               exit 1
             fi
+            cp -a "build/lib/$lib" "$crypto_staging/lib/"
           done
-          nm -g "$staging/lib/libbb_rust_api.a" | grep -q 'srs_init_srs' || \
-            { echo "ERROR: libbb_rust_api.a missing srs_init_srs" >&2; exit 1; }
-          nm -g "$staging/lib/libbb_rust_api.a" | grep -q 'srs_init_grumpkin_srs' || \
-            { echo "ERROR: libbb_rust_api.a missing srs_init_grumpkin_srs" >&2; exit 1; }
-          echo "$version" > "$staging/VERSION"
-          asset="barretenberg-${version}-${target}.tar.gz"
-          tar -czf "$asset" -C "$staging" .
-          # Sanity check: ensure expected files exist inside the tarball (avoid SIGPIPE with pipefail)
-          listfile=$(mktemp -t tarlist.XXXXXX)
-          tar -tzf "$asset" > "$listfile"
-          grep -Eq '^(\./)?lib/libbb_rust_api\.a$' "$listfile" || { echo "ERROR: $asset missing lib/libbb_rust_api.a" >&2; cat "$listfile" >&2; exit 1; }
-          grep -Eq '^(\./)?lib/libbb-external\.a$' "$listfile" || { echo "ERROR: $asset missing lib/libbb-external.a" >&2; cat "$listfile" >&2; exit 1; }
-          grep -Eq '^(\./)?include/barretenberg/ecc/curves/bn254/g1\.hpp$' "$listfile" || { echo "ERROR: $asset missing Barretenberg public headers" >&2; cat "$listfile" >&2; exit 1; }
-          grep -Eq '^(\./)?include/msgpack\.hpp$' "$listfile" || { echo "ERROR: $asset missing mirrored msgpack public headers" >&2; cat "$listfile" >&2; exit 1; }
-          grep -Eq '^(\./)?include-deps/msgpack/msgpack\.hpp$' "$listfile" || { echo "ERROR: $asset missing include-deps/msgpack" >&2; cat "$listfile" >&2; exit 1; }
-          ! grep -Eq '^(\./)?include/tracy/' "$listfile" || { echo "ERROR: $asset unexpectedly contains Tracy public headers" >&2; cat "$listfile" >&2; exit 1; }
-          ! grep -Eq '^(\./)?include-deps/tracy/' "$listfile" || { echo "ERROR: $asset unexpectedly contains include-deps/tracy" >&2; cat "$listfile" >&2; exit 1; }
-          rm -f "$listfile"
-          echo "ASSET=$asset" >> $GITHUB_ENV
+          for lib in libbb-prover-external.a libbb_rust_prover_api.a; do
+            if [ ! -f "build/lib/$lib" ]; then
+              echo "Missing expected prover library: $lib" >&2
+              exit 1
+            fi
+            cp -a "build/lib/$lib" "$prover_staging/lib/"
+          done
+          # Keep the unstripped RelWithDebInfo archives as a separate diagnostic
+          # asset, while normal consumers get the exact same optimized objects
+          # without their native DWARF sections.
+          cp -a "$crypto_staging" "$crypto_debug_staging"
+          cp -a "$prover_staging" "$prover_debug_staging"
+          if [ -z "${BB_OBJCOPY:-}" ] || [ ! -x "$BB_OBJCOPY" ]; then
+            echo "BB_OBJCOPY does not name an executable LLVM objcopy" >&2
+            exit 1
+          fi
+          unstripped_bytes=0
+          stripped_bytes=0
+          archives=(
+            "$crypto_staging/lib/libbb-crypto-external.a"
+            "$crypto_staging/lib/libbb_rust_crypto_api.a"
+            "$prover_staging/lib/libbb-prover-external.a"
+            "$prover_staging/lib/libbb_rust_prover_api.a"
+          )
+          for archive in "${archives[@]}"; do
+            stripped="${archive}.stripped"
+            unstripped_bytes=$((unstripped_bytes + $(wc -c < "$archive")))
+            "$BB_OBJCOPY" --strip-debug "$archive" "$stripped"
+            mv "$stripped" "$archive"
+            stripped_bytes=$((stripped_bytes + $(wc -c < "$archive")))
+          done
+          if [ "$stripped_bytes" -ge "$unstripped_bytes" ]; then
+            echo "Stripping native debug sections did not reduce archive size" >&2
+            exit 1
+          fi
+          echo "Native archives: $unstripped_bytes bytes -> $stripped_bytes bytes"
+          crypto_symbols=$(mktemp -t crypto-symbols.XXXXXX)
+          prover_symbols=$(mktemp -t prover-symbols.XXXXXX)
+          nm -g "$crypto_staging/lib/libbb_rust_crypto_api.a" > "$crypto_symbols"
+          nm -g "$prover_staging/lib/libbb_rust_prover_api.a" > "$prover_symbols"
+          grep -q 'bb_poseidon2_permutation_bn254' "$crypto_symbols" || \
+            { echo "ERROR: libbb_rust_crypto_api.a missing bb_poseidon2_permutation_bn254" >&2; exit 1; }
+          grep -q 'srs_init_srs' "$prover_symbols" || \
+            { echo "ERROR: libbb_rust_prover_api.a missing srs_init_srs" >&2; exit 1; }
+          grep -q 'srs_init_grumpkin_srs' "$prover_symbols" || \
+            { echo "ERROR: libbb_rust_prover_api.a missing srs_init_grumpkin_srs" >&2; exit 1; }
+          rm -f "$crypto_symbols" "$prover_symbols"
+          for directory in \
+            "$crypto_staging" \
+            "$prover_staging" \
+            "$crypto_debug_staging" \
+            "$prover_debug_staging"; do
+            echo "$version" > "$directory/VERSION"
+          done
+          crypto_asset="barretenberg-crypto-${version}-${target}.tar.gz"
+          prover_asset="barretenberg-prover-${version}-${target}.tar.gz"
+          crypto_debug_asset="barretenberg-crypto-debug-${version}-${target}.tar.gz"
+          prover_debug_asset="barretenberg-prover-debug-${version}-${target}.tar.gz"
+          tar -czf "$crypto_asset" -C "$crypto_staging" .
+          tar -czf "$prover_asset" -C "$prover_staging" .
+          tar -czf "$crypto_debug_asset" -C "$crypto_debug_staging" .
+          tar -czf "$prover_debug_asset" -C "$prover_debug_staging" .
+
+          validate_crypto_asset() {
+            local asset="$1"
+            local listfile
+            listfile=$(mktemp -t tarlist.XXXXXX)
+            tar -tzf "$asset" > "$listfile"
+            grep -Eq '^(\./)?VERSION$' "$listfile" || { echo "ERROR: $asset missing VERSION" >&2; cat "$listfile" >&2; exit 1; }
+            grep -Eq '^(\./)?lib/libbb-crypto-external\.a$' "$listfile" || { echo "ERROR: $asset missing lib/libbb-crypto-external.a" >&2; cat "$listfile" >&2; exit 1; }
+            grep -Eq '^(\./)?lib/libbb_rust_crypto_api\.a$' "$listfile" || { echo "ERROR: $asset missing lib/libbb_rust_crypto_api.a" >&2; cat "$listfile" >&2; exit 1; }
+            ! grep -Eq '^(\./)?lib/libbb-(prover-)?external\.a$|^(\./)?lib/libbb_rust_(api|prover_api)\.a$' "$listfile" || { echo "ERROR: $asset unexpectedly contains combined/prover libraries" >&2; cat "$listfile" >&2; exit 1; }
+            ! grep -Eq '^(\./)?include(-deps)?/' "$listfile" || { echo "ERROR: $asset unexpectedly contains prover headers" >&2; cat "$listfile" >&2; exit 1; }
+            rm -f "$listfile"
+          }
+
+          validate_prover_asset() {
+            local asset="$1"
+            local listfile
+            listfile=$(mktemp -t tarlist.XXXXXX)
+            tar -tzf "$asset" > "$listfile"
+            grep -Eq '^(\./)?VERSION$' "$listfile" || { echo "ERROR: $asset missing VERSION" >&2; cat "$listfile" >&2; exit 1; }
+            grep -Eq '^(\./)?lib/libbb-prover-external\.a$' "$listfile" || { echo "ERROR: $asset missing lib/libbb-prover-external.a" >&2; cat "$listfile" >&2; exit 1; }
+            grep -Eq '^(\./)?lib/libbb_rust_prover_api\.a$' "$listfile" || { echo "ERROR: $asset missing lib/libbb_rust_prover_api.a" >&2; cat "$listfile" >&2; exit 1; }
+            ! grep -Eq '^(\./)?lib/libbb-(crypto-)?external\.a$|^(\./)?lib/libbb_rust_(api|crypto_api)\.a$' "$listfile" || { echo "ERROR: $asset unexpectedly contains combined/crypto libraries" >&2; cat "$listfile" >&2; exit 1; }
+            grep -Eq '^(\./)?include/barretenberg/ecc/curves/bn254/g1\.hpp$' "$listfile" || { echo "ERROR: $asset missing Barretenberg public headers" >&2; cat "$listfile" >&2; exit 1; }
+            grep -Eq '^(\./)?include/msgpack\.hpp$' "$listfile" || { echo "ERROR: $asset missing mirrored msgpack public headers" >&2; cat "$listfile" >&2; exit 1; }
+            grep -Eq '^(\./)?include-deps/msgpack/msgpack\.hpp$' "$listfile" || { echo "ERROR: $asset missing include-deps/msgpack" >&2; cat "$listfile" >&2; exit 1; }
+            ! grep -Eq '^(\./)?include/tracy/' "$listfile" || { echo "ERROR: $asset unexpectedly contains Tracy public headers" >&2; cat "$listfile" >&2; exit 1; }
+            ! grep -Eq '^(\./)?include-deps/tracy/' "$listfile" || { echo "ERROR: $asset unexpectedly contains include-deps/tracy" >&2; cat "$listfile" >&2; exit 1; }
+            rm -f "$listfile"
+          }
+
+          validate_crypto_asset "$crypto_asset"
+          validate_crypto_asset "$crypto_debug_asset"
+          validate_prover_asset "$prover_asset"
+          validate_prover_asset "$prover_debug_asset"
+          echo "CRYPTO_ASSET=$crypto_asset" >> $GITHUB_ENV
+          echo "PROVER_ASSET=$prover_asset" >> $GITHUB_ENV
+          echo "CRYPTO_DEBUG_ASSET=$crypto_debug_asset" >> $GITHUB_ENV
+          echo "PROVER_DEBUG_ASSET=$prover_debug_asset" >> $GITHUB_ENV
 
       - name: Upload artifact
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: ${{ env.ASSET }}
-          path: ${{ env.ASSET }}
+          name: barretenberg-split-${{ env.VERSION_TAG }}-${{ matrix.target }}
+          path: |
+            ${{ env.CRYPTO_ASSET }}
+            ${{ env.PROVER_ASSET }}
+            ${{ env.CRYPTO_DEBUG_ASSET }}
+            ${{ env.PROVER_DEBUG_ASSET }}
           retention-days: 7
 
       # No separate 'latest' artifact; consumers fetch versioned assets by crate version
@@ -468,7 +601,14 @@ jobs:
 
   release:
     name: Publish release assets
-    needs: build
+    needs:
+      - build
+      - consumer-test
+      - consumer-test-aarch64
+      - consumer-test-android
+      - consumer-test-macos
+      - consumer-test-ios-sim
+      - consumer-test-ios
     runs-on: ubuntu-latest
     # Run on tag push, or manual run with publish=true
     if: ${{ (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')) || (github.event_name == 'workflow_dispatch' && inputs.publish) }}
@@ -485,22 +625,93 @@ jobs:
 
       - name: Gather files
         run: |
+          set -euo pipefail
           ls -R artifacts
           mkdir -p out
           find artifacts -type f -name 'barretenberg-*.tar.gz' -exec cp {} out/ \;
-          # Verify each tarball has the expected layout before publishing
+          shopt -s nullglob
+          files=(out/*.tar.gz)
+          if [ "${#files[@]}" -eq 0 ]; then
+            echo "ERROR: no prebuilt tarballs were downloaded" >&2
+            exit 1
+          fi
+
+          validate_crypto_asset() {
+            local asset="$1"
+            local listfile
+            listfile=$(mktemp -t tarlist.XXXXXX)
+            tar -tzf "$asset" > "$listfile"
+            grep -Eq '^(\./)?VERSION$' "$listfile" || { echo "ERROR: $asset missing VERSION" >&2; cat "$listfile" >&2; exit 1; }
+            grep -Eq '^(\./)?lib/libbb-crypto-external\.a$' "$listfile" || { echo "ERROR: $asset missing lib/libbb-crypto-external.a" >&2; cat "$listfile" >&2; exit 1; }
+            grep -Eq '^(\./)?lib/libbb_rust_crypto_api\.a$' "$listfile" || { echo "ERROR: $asset missing lib/libbb_rust_crypto_api.a" >&2; cat "$listfile" >&2; exit 1; }
+            ! grep -Eq '^(\./)?lib/libbb-(prover-)?external\.a$|^(\./)?lib/libbb_rust_(api|prover_api)\.a$' "$listfile" || { echo "ERROR: $asset unexpectedly contains combined/prover libraries" >&2; cat "$listfile" >&2; exit 1; }
+            ! grep -Eq '^(\./)?include(-deps)?/' "$listfile" || { echo "ERROR: $asset unexpectedly contains prover headers" >&2; cat "$listfile" >&2; exit 1; }
+            rm -f "$listfile"
+          }
+
+          validate_prover_asset() {
+            local asset="$1"
+            local listfile
+            listfile=$(mktemp -t tarlist.XXXXXX)
+            tar -tzf "$asset" > "$listfile"
+            grep -Eq '^(\./)?VERSION$' "$listfile" || { echo "ERROR: $asset missing VERSION" >&2; cat "$listfile" >&2; exit 1; }
+            grep -Eq '^(\./)?lib/libbb-prover-external\.a$' "$listfile" || { echo "ERROR: $asset missing lib/libbb-prover-external.a" >&2; cat "$listfile" >&2; exit 1; }
+            grep -Eq '^(\./)?lib/libbb_rust_prover_api\.a$' "$listfile" || { echo "ERROR: $asset missing lib/libbb_rust_prover_api.a" >&2; cat "$listfile" >&2; exit 1; }
+            ! grep -Eq '^(\./)?lib/libbb-(crypto-)?external\.a$|^(\./)?lib/libbb_rust_(api|crypto_api)\.a$' "$listfile" || { echo "ERROR: $asset unexpectedly contains combined/crypto libraries" >&2; cat "$listfile" >&2; exit 1; }
+            grep -Eq '^(\./)?include/barretenberg/ecc/curves/bn254/g1\.hpp$' "$listfile" || { echo "ERROR: $asset missing Barretenberg public headers" >&2; cat "$listfile" >&2; exit 1; }
+            grep -Eq '^(\./)?include/msgpack\.hpp$' "$listfile" || { echo "ERROR: $asset missing mirrored msgpack public headers" >&2; cat "$listfile" >&2; exit 1; }
+            grep -Eq '^(\./)?include-deps/msgpack/msgpack\.hpp$' "$listfile" || { echo "ERROR: $asset missing include-deps/msgpack" >&2; cat "$listfile" >&2; exit 1; }
+            ! grep -Eq '^(\./)?include/tracy/' "$listfile" || { echo "ERROR: $asset unexpectedly contains Tracy public headers" >&2; cat "$listfile" >&2; exit 1; }
+            ! grep -Eq '^(\./)?include-deps/tracy/' "$listfile" || { echo "ERROR: $asset unexpectedly contains include-deps/tracy" >&2; cat "$listfile" >&2; exit 1; }
+            rm -f "$listfile"
+          }
+
+          # Validate each archive according to its component, keeping the
+          # unstripped debug assets subject to the same package contract.
           for f in out/*.tar.gz; do
             echo "Checking $f"
-            listfile=$(mktemp -t tarlist.XXXXXX)
-            tar -tzf "$f" > "$listfile"
-            grep -Eq '^(\./)?lib/libbb_rust_api\.a$' "$listfile" || { echo "ERROR: $f missing lib/libbb_rust_api.a" >&2; cat "$listfile" >&2; exit 1; }
-            grep -Eq '^(\./)?lib/libbb-external\.a$' "$listfile" || { echo "ERROR: $f missing lib/libbb-external.a" >&2; cat "$listfile" >&2; exit 1; }
-            grep -Eq '^(\./)?include/msgpack\.hpp$' "$listfile" || { echo "ERROR: $f missing mirrored msgpack public headers" >&2; cat "$listfile" >&2; exit 1; }
-            grep -Eq '^(\./)?include-deps/msgpack/msgpack\.hpp$' "$listfile" || { echo "ERROR: $f missing include-deps/msgpack" >&2; cat "$listfile" >&2; exit 1; }
-            ! grep -Eq '^(\./)?include/tracy/' "$listfile" || { echo "ERROR: $f unexpectedly contains Tracy public headers" >&2; cat "$listfile" >&2; exit 1; }
-            ! grep -Eq '^(\./)?include-deps/tracy/' "$listfile" || { echo "ERROR: $f unexpectedly contains include-deps/tracy" >&2; cat "$listfile" >&2; exit 1; }
-            rm -f "$listfile"
+            case "$(basename "$f")" in
+              barretenberg-crypto-*.tar.gz)
+                validate_crypto_asset "$f"
+                ;;
+              barretenberg-prover-*.tar.gz)
+                validate_prover_asset "$f"
+                ;;
+              *)
+                echo "ERROR: unexpected prebuilt asset name: $f" >&2
+                exit 1
+                ;;
+            esac
           done
+
+          # Each target must have a normal crypto/prover pair and both debug
+          # counterparts before anything is attached to the release.
+          normal_crypto_count=0
+          for crypto in out/barretenberg-crypto-*.tar.gz; do
+            case "$(basename "$crypto")" in
+              barretenberg-crypto-debug-*.tar.gz) continue ;;
+            esac
+            normal_crypto_count=$((normal_crypto_count + 1))
+            suffix=$(basename "$crypto")
+            suffix=${suffix#barretenberg-crypto-}
+            for counterpart in \
+              "out/barretenberg-prover-${suffix}" \
+              "out/barretenberg-crypto-debug-${suffix}" \
+              "out/barretenberg-prover-debug-${suffix}"; do
+              if [ ! -f "$counterpart" ]; then
+                echo "ERROR: missing counterpart for $crypto: $counterpart" >&2
+                exit 1
+              fi
+            done
+          done
+          if [ "$normal_crypto_count" -eq 0 ]; then
+            echo "ERROR: no normal crypto assets found" >&2
+            exit 1
+          fi
+          if [ "${#files[@]}" -ne $((normal_crypto_count * 4)) ]; then
+            echo "ERROR: found ${#files[@]} assets for $normal_crypto_count target(s); expected four per target" >&2
+            exit 1
+          fi
 
       - name: Resolve crate version
         run: |
@@ -509,7 +720,7 @@ jobs:
           elif [[ "${{ startsWith(github.ref, 'refs/tags/') }}" == "true" ]]; then
             version_tag='${{ github.ref_name }}'
           else
-            crate_version=$(sed -n 's/^version\s*=\s*"\(.*\)"/\1/p' crates/aztec-barretenberg-sys-rs/Cargo.toml | head -n1)
+            crate_version=$(awk -F '"' '/^version[[:space:]]*=/ { print $2; exit }' crates/aztec-barretenberg-sys-rs/Cargo.toml)
             version_tag="v${crate_version}"
           fi
           echo "CRATE_VERSION=${version_tag#v}" >> $GITHUB_ENV
@@ -552,7 +763,7 @@ jobs:
           elif [[ "${{ startsWith(github.ref, 'refs/tags/') }}" == "true" ]]; then
             version_tag='${{ github.ref_name }}'
           else
-            crate_version=$(sed -n 's/^version\s*=\s*"\(.*\)"/\1/p' crates/aztec-barretenberg-sys-rs/Cargo.toml | head -n1)
+            crate_version=$(awk -F '"' '/^version[[:space:]]*=/ { print $2; exit }' crates/aztec-barretenberg-sys-rs/Cargo.toml)
             version_tag="v${crate_version}"
           fi
           echo "VERSION_TAG=${version_tag}" >> $GITHUB_ENV
@@ -568,19 +779,86 @@ jobs:
         with:
           path: artifacts
 
-      - name: Prepare prebuilt cache
+      - name: Test crypto-only consumer without prover graph
+        env:
+          BB_USE_PREBUILT: "1"
+          BB_PREBUILT_VERSION: ${{ env.VERSION_TAG }}
+          BB_PREBUILT_CACHE_DIR: ${{ github.workspace }}/target/bb-crypto-only-prebuilt
+          CARGO_TARGET_DIR: ${{ github.workspace }}/target/bb-crypto-only-build
         run: |
           set -euxo pipefail
-          asset="barretenberg-${VERSION_TAG}-${TARGET}.tar.gz"
+          asset="barretenberg-crypto-${VERSION_TAG}-${TARGET}.tar.gz"
           found=$(find artifacts -type f -name "$asset" | head -n1 || true)
           if [ -z "$found" ]; then
             echo "Artifact $asset not found in artifacts/" >&2
             ls -R artifacts >&2 || true
             exit 1
           fi
-          cache_dir="target/bb-prebuilt/${VERSION_TAG}/${TARGET}"
+          cache_dir="${BB_PREBUILT_CACHE_DIR}/${VERSION_TAG}/${TARGET}"
           mkdir -p "$cache_dir"
           tar -xzf "$found" -C "$cache_dir"
+
+          consumer="target/bb-crypto-only-consumer"
+          mkdir -p "$consumer/src"
+          cat > "$consumer/Cargo.toml" <<'EOF'
+          [package]
+          name = "bb-crypto-only-consumer"
+          version = "0.0.0"
+          edition = "2021"
+
+          [workspace]
+
+          [dependencies]
+          aztec-barretenberg-crypto-sys-rs = { path = "../../crates/aztec-barretenberg-crypto-sys-rs" }
+          EOF
+          cat > "$consumer/src/lib.rs" <<'EOF'
+          #[cfg(test)]
+          mod tests {
+              #[test]
+              fn links_crypto_ffi_without_prover() {
+                  let input = [0_u8; 128];
+                  let mut output = std::ptr::null_mut();
+                  let mut output_len = 0;
+                  let status = unsafe {
+                      aztec_barretenberg_crypto_sys_rs::bb_poseidon2_permutation_bn254(
+                          input.as_ptr(),
+                          4,
+                          &mut output,
+                          &mut output_len,
+                      )
+                  };
+                  assert_eq!(status, 0);
+                  assert_eq!(output_len, 128);
+                  assert!(!output.is_null());
+                  unsafe { aztec_barretenberg_crypto_sys_rs::bb_free(output) };
+              }
+          }
+          EOF
+
+          cargo test --manifest-path "$consumer/Cargo.toml"
+          treefile=$(mktemp -t cargo-tree.XXXXXX)
+          cargo tree --manifest-path "$consumer/Cargo.toml" --prefix none > "$treefile"
+          grep -Eq '^aztec-barretenberg-crypto-sys-rs v' "$treefile" || \
+            { echo "ERROR: crypto sys crate missing from crypto-only graph" >&2; cat "$treefile" >&2; exit 1; }
+          ! grep -Eq '^aztec-barretenberg-sys-rs v|^aztec-barretenberg-rs v' "$treefile" || \
+            { echo "ERROR: crypto-only graph unexpectedly contains prover/full wrapper" >&2; cat "$treefile" >&2; exit 1; }
+          rm -f "$treefile"
+
+      - name: Prepare prebuilt cache
+        run: |
+          set -euxo pipefail
+          cache_dir="target/bb-prebuilt/${VERSION_TAG}/${TARGET}"
+          mkdir -p "$cache_dir"
+          for component in crypto prover; do
+            asset="barretenberg-${component}-${VERSION_TAG}-${TARGET}.tar.gz"
+            found=$(find artifacts -type f -name "$asset" | head -n1 || true)
+            if [ -z "$found" ]; then
+              echo "Artifact $asset not found in artifacts/" >&2
+              ls -R artifacts >&2 || true
+              exit 1
+            fi
+            tar -xzf "$found" -C "$cache_dir"
+          done
           echo "$VERSION_TAG" > "$cache_dir/VERSION"
 
       - name: Validate public header include paths
@@ -608,6 +886,85 @@ jobs:
         run: |
           cargo build -p aztec-barretenberg-rs
 
+      - name: Verify full split executable link
+        env:
+          BB_USE_PREBUILT: "1"
+          BB_PREBUILT_VERSION: ${{ env.VERSION_TAG }}
+          CARGO_TARGET_DIR: ${{ github.workspace }}/target
+        run: |
+          set -euxo pipefail
+          consumer="target/bb-full-link-consumer"
+          mkdir -p "$consumer/src"
+          cat > "$consumer/Cargo.toml" <<'EOF'
+          [package]
+          name = "bb-full-link-consumer"
+          version = "0.0.0"
+          edition = "2021"
+
+          [workspace]
+
+          [dependencies]
+          aztec-barretenberg-sys-rs = { path = "../../crates/aztec-barretenberg-sys-rs" }
+          EOF
+          cat > "$consumer/src/main.rs" <<'EOF'
+          fn main() {
+              let crypto = aztec_barretenberg_sys_rs::bb_poseidon2_permutation_bn254 as usize;
+              let prover = aztec_barretenberg_sys_rs::srs_init_srs as usize;
+              assert_ne!(crypto, 0);
+              assert_ne!(prover, 0);
+          }
+          EOF
+          cargo run --manifest-path "$consumer/Cargo.toml"
+
+      - name: Verify native symbols survive Rust staticlib packaging
+        env:
+          BB_USE_PREBUILT: "1"
+          BB_PREBUILT_VERSION: ${{ env.VERSION_TAG }}
+          CARGO_TARGET_DIR: ${{ github.workspace }}/target
+        run: |
+          set -euxo pipefail
+          consumer="target/bb-staticlib-consumer"
+          mkdir -p "$consumer/src"
+          cat > "$consumer/Cargo.toml" <<'EOF'
+          [package]
+          name = "bb-staticlib-consumer"
+          version = "0.0.0"
+          edition = "2021"
+
+          [workspace]
+
+          [lib]
+          crate-type = ["staticlib"]
+
+          [dependencies]
+          aztec-barretenberg-sys-rs = { path = "../../crates/aztec-barretenberg-sys-rs" }
+          EOF
+          cat > "$consumer/src/lib.rs" <<'EOF'
+          #[no_mangle]
+          pub extern "C" fn bb_staticlib_crypto_symbol() -> usize {
+              aztec_barretenberg_sys_rs::bb_poseidon2_permutation_bn254 as usize
+          }
+
+          #[no_mangle]
+          pub extern "C" fn bb_staticlib_prover_symbol() -> usize {
+              aztec_barretenberg_sys_rs::srs_init_srs as usize
+          }
+          EOF
+
+          cargo build --manifest-path "$consumer/Cargo.toml"
+          staticlib="target/debug/libbb_staticlib_consumer.a"
+          if [ ! -f "$staticlib" ]; then
+            echo "ERROR: Rust staticlib was not produced at $staticlib" >&2
+            exit 1
+          fi
+          symbols=$(mktemp -t staticlib-symbols.XXXXXX)
+          nm -g --defined-only "$staticlib" > "$symbols"
+          grep -Eq '[[:space:]]bb_poseidon2_permutation_bn254$' "$symbols" || \
+            { echo "ERROR: staticlib is missing the BB crypto definition" >&2; exit 1; }
+          grep -Eq '[[:space:]]srs_init_srs$' "$symbols" || \
+            { echo "ERROR: staticlib is missing the BB prover definition" >&2; exit 1; }
+          rm -f "$symbols"
+
   consumer-test-aarch64:
     name: Consumer test (Linux aarch64 cross)
     needs: build
@@ -627,7 +984,7 @@ jobs:
           elif [[ "${{ startsWith(github.ref, 'refs/tags/') }}" == "true" ]]; then
             version_tag='${{ github.ref_name }}'
           else
-            crate_version=$(sed -n 's/^version\s*=\s*"\(.*\)"/\1/p' crates/aztec-barretenberg-sys-rs/Cargo.toml | head -n1)
+            crate_version=$(awk -F '"' '/^version[[:space:]]*=/ { print $2; exit }' crates/aztec-barretenberg-sys-rs/Cargo.toml)
             version_tag="v${crate_version}"
           fi
           echo "VERSION_TAG=${version_tag}" >> $GITHUB_ENV
@@ -653,16 +1010,18 @@ jobs:
       - name: Prepare prebuilt cache
         run: |
           set -euxo pipefail
-          asset="barretenberg-${VERSION_TAG}-${TARGET}.tar.gz"
-          found=$(find artifacts -type f -name "$asset" | head -n1 || true)
-          if [ -z "$found" ]; then
-            echo "Artifact $asset not found in artifacts/" >&2
-            ls -R artifacts >&2 || true
-            exit 1
-          fi
           cache_dir="target/bb-prebuilt/${VERSION_TAG}/${TARGET}"
           mkdir -p "$cache_dir"
-          tar -xzf "$found" -C "$cache_dir"
+          for component in crypto prover; do
+            asset="barretenberg-${component}-${VERSION_TAG}-${TARGET}.tar.gz"
+            found=$(find artifacts -type f -name "$asset" | head -n1 || true)
+            if [ -z "$found" ]; then
+              echo "Artifact $asset not found in artifacts/" >&2
+              ls -R artifacts >&2 || true
+              exit 1
+            fi
+            tar -xzf "$found" -C "$cache_dir"
+          done
           echo "$VERSION_TAG" > "$cache_dir/VERSION"
 
       - name: Validate public header include paths (aarch64)
@@ -721,7 +1080,7 @@ jobs:
           elif [[ "${{ startsWith(github.ref, 'refs/tags/') }}" == "true" ]]; then
             version_tag='${{ github.ref_name }}'
           else
-            crate_version=$(sed -n 's/^version\s*=\s*"\(.*\)"/\1/p' crates/aztec-barretenberg-sys-rs/Cargo.toml | head -n1)
+            crate_version=$(awk -F '"' '/^version[[:space:]]*=/ { print $2; exit }' crates/aztec-barretenberg-sys-rs/Cargo.toml)
             version_tag="v${crate_version}"
           fi
           echo "VERSION_TAG=${version_tag}" >> $GITHUB_ENV
@@ -753,16 +1112,18 @@ jobs:
       - name: Prepare prebuilt cache
         run: |
           set -euxo pipefail
-          asset="barretenberg-${VERSION_TAG}-${TARGET}.tar.gz"
-          found=$(find artifacts -type f -name "$asset" | head -n1 || true)
-          if [ -z "$found" ]; then
-            echo "Artifact $asset not found in artifacts/" >&2
-            ls -R artifacts >&2 || true
-            exit 1
-          fi
           cache_dir="target/bb-prebuilt/${VERSION_TAG}/${TARGET}"
           mkdir -p "$cache_dir"
-          tar -xzf "$found" -C "$cache_dir"
+          for component in crypto prover; do
+            asset="barretenberg-${component}-${VERSION_TAG}-${TARGET}.tar.gz"
+            found=$(find artifacts -type f -name "$asset" | head -n1 || true)
+            if [ -z "$found" ]; then
+              echo "Artifact $asset not found in artifacts/" >&2
+              ls -R artifacts >&2 || true
+              exit 1
+            fi
+            tar -xzf "$found" -C "$cache_dir"
+          done
           echo "$VERSION_TAG" > "$cache_dir/VERSION"
 
       - name: Build Rust crate against prebuilts (Android)
@@ -818,7 +1179,7 @@ jobs:
           elif [[ "${{ startsWith(github.ref, 'refs/tags/') }}" == "true" ]]; then
             version_tag='${{ github.ref_name }}'
           else
-            crate_version=$(sed -n 's/^version\s*=\s*"\(.*\)"/\1/p' crates/aztec-barretenberg-sys-rs/Cargo.toml | head -n1)
+            crate_version=$(awk -F '"' '/^version[[:space:]]*=/ { print $2; exit }' crates/aztec-barretenberg-sys-rs/Cargo.toml)
             version_tag="v${crate_version}"
           fi
           echo "VERSION_TAG=${version_tag}" >> $GITHUB_ENV
@@ -839,16 +1200,18 @@ jobs:
       - name: Prepare prebuilt cache
         run: |
           set -euxo pipefail
-          asset="barretenberg-${VERSION_TAG}-${TARGET}.tar.gz"
-          found=$(find artifacts -type f -name "$asset" | head -n1 || true)
-          if [ -z "$found" ]; then
-            echo "Artifact $asset not found in artifacts/" >&2
-            ls -R artifacts >&2 || true
-            exit 1
-          fi
           cache_dir="target/bb-prebuilt/${VERSION_TAG}/${TARGET}"
           mkdir -p "$cache_dir"
-          tar -xzf "$found" -C "$cache_dir"
+          for component in crypto prover; do
+            asset="barretenberg-${component}-${VERSION_TAG}-${TARGET}.tar.gz"
+            found=$(find artifacts -type f -name "$asset" | head -n1 || true)
+            if [ -z "$found" ]; then
+              echo "Artifact $asset not found in artifacts/" >&2
+              ls -R artifacts >&2 || true
+              exit 1
+            fi
+            tar -xzf "$found" -C "$cache_dir"
+          done
           echo "$VERSION_TAG" > "$cache_dir/VERSION"
 
       - name: Build Rust crate against prebuilts (macOS)
@@ -877,7 +1240,7 @@ jobs:
           elif [[ "${{ startsWith(github.ref, 'refs/tags/') }}" == "true" ]]; then
             version_tag='${{ github.ref_name }}'
           else
-            crate_version=$(sed -n 's/^version\s*=\s*"\(.*\)"/\1/p' crates/aztec-barretenberg-sys-rs/Cargo.toml | head -n1)
+            crate_version=$(awk -F '"' '/^version[[:space:]]*=/ { print $2; exit }' crates/aztec-barretenberg-sys-rs/Cargo.toml)
             version_tag="v${crate_version}"
           fi
           echo "VERSION_TAG=${version_tag}" >> $GITHUB_ENV
@@ -897,16 +1260,18 @@ jobs:
       - name: Prepare prebuilt cache
         run: |
           set -euxo pipefail
-          asset="barretenberg-${VERSION_TAG}-${TARGET}.tar.gz"
-          found=$(find artifacts -type f -name "$asset" | head -n1 || true)
-          if [ -z "$found" ]; then
-            echo "Artifact $asset not found in artifacts/" >&2
-            ls -R artifacts >&2 || true
-            exit 1
-          fi
           cache_dir="target/bb-prebuilt/${VERSION_TAG}/${TARGET}"
           mkdir -p "$cache_dir"
-          tar -xzf "$found" -C "$cache_dir"
+          for component in crypto prover; do
+            asset="barretenberg-${component}-${VERSION_TAG}-${TARGET}.tar.gz"
+            found=$(find artifacts -type f -name "$asset" | head -n1 || true)
+            if [ -z "$found" ]; then
+              echo "Artifact $asset not found in artifacts/" >&2
+              ls -R artifacts >&2 || true
+              exit 1
+            fi
+            tar -xzf "$found" -C "$cache_dir"
+          done
           echo "$VERSION_TAG" > "$cache_dir/VERSION"
           # Do not set BB_LIB_DIR; allow build.rs to find prebuilt by TARGET
 
@@ -936,7 +1301,7 @@ jobs:
           elif [[ "${{ startsWith(github.ref, 'refs/tags/') }}" == "true" ]]; then
             version_tag='${{ github.ref_name }}'
           else
-            crate_version=$(sed -n 's/^version\s*=\s*"\(.*\)"/\1/p' crates/aztec-barretenberg-sys-rs/Cargo.toml | head -n1)
+            crate_version=$(awk -F '"' '/^version[[:space:]]*=/ { print $2; exit }' crates/aztec-barretenberg-sys-rs/Cargo.toml)
             version_tag="v${crate_version}"
           fi
           echo "VERSION_TAG=${version_tag}" >> $GITHUB_ENV
@@ -956,16 +1321,18 @@ jobs:
       - name: Prepare prebuilt cache
         run: |
           set -euxo pipefail
-          asset="barretenberg-${VERSION_TAG}-${TARGET}.tar.gz"
-          found=$(find artifacts -type f -name "$asset" | head -n1 || true)
-          if [ -z "$found" ]; then
-            echo "Artifact $asset not found in artifacts/" >&2
-            ls -R artifacts >&2 || true
-            exit 1
-          fi
           cache_dir="target/bb-prebuilt/${VERSION_TAG}/${TARGET}"
           mkdir -p "$cache_dir"
-          tar -xzf "$found" -C "$cache_dir"
+          for component in crypto prover; do
+            asset="barretenberg-${component}-${VERSION_TAG}-${TARGET}.tar.gz"
+            found=$(find artifacts -type f -name "$asset" | head -n1 || true)
+            if [ -z "$found" ]; then
+              echo "Artifact $asset not found in artifacts/" >&2
+              ls -R artifacts >&2 || true
+              exit 1
+            fi
+            tar -xzf "$found" -C "$cache_dir"
+          done
           echo "$VERSION_TAG" > "$cache_dir/VERSION"
           # Do not set BB_LIB_DIR; allow build.rs to find prebuilt by TARGET
 
@@ -989,7 +1356,7 @@ jobs:
 
       - name: Resolve crate version
         run: |
-          crate_version=$(sed -n 's/^version\s*=\s*"\(.*\)"/\1/p' crates/aztec-barretenberg-sys-rs/Cargo.toml | head -n1)
+          crate_version=$(awk -F '"' '/^version[[:space:]]*=/ { print $2; exit }' crates/aztec-barretenberg-sys-rs/Cargo.toml)
           version_tag="v${crate_version}"
           echo "CRATE_VERSION=${crate_version}" >> $GITHUB_ENV
           echo "VERSION_TAG=${version_tag}" >> $GITHUB_ENV
@@ -1023,7 +1390,7 @@ jobs:
 
       - name: Resolve crate version
         run: |
-          crate_version=$(sed -n 's/^version\s*=\s*"\(.*\)"/\1/p' crates/aztec-barretenberg-sys-rs/Cargo.toml | head -n1)
+          crate_version=$(awk -F '"' '/^version[[:space:]]*=/ { print $2; exit }' crates/aztec-barretenberg-sys-rs/Cargo.toml)
           version_tag="v${crate_version}"
           echo "CRATE_VERSION=${crate_version}" >> $GITHUB_ENV
           echo "VERSION_TAG=${version_tag}" >> $GITHUB_ENV
@@ -1054,7 +1421,7 @@ jobs:
 
       - name: Resolve crate version
         run: |
-          crate_version=$(sed -n 's/^version\s*=\s*"\(.*\)"/\1/p' crates/aztec-barretenberg-sys-rs/Cargo.toml | head -n1)
+          crate_version=$(awk -F '"' '/^version[[:space:]]*=/ { print $2; exit }' crates/aztec-barretenberg-sys-rs/Cargo.toml)
           version_tag="v${crate_version}"
           echo "CRATE_VERSION=${crate_version}" >> $GITHUB_ENV
           echo "VERSION_TAG=${version_tag}" >> $GITHUB_ENV
@@ -1087,7 +1454,7 @@ jobs:
 
       - name: Resolve crate version
         run: |
-          crate_version=$(sed -n 's/^version\s*=\s*"\(.*\)"/\1/p' crates/aztec-barretenberg-sys-rs/Cargo.toml | head -n1)
+          crate_version=$(awk -F '"' '/^version[[:space:]]*=/ { print $2; exit }' crates/aztec-barretenberg-sys-rs/Cargo.toml)
           version_tag="v${crate_version}"
           echo "CRATE_VERSION=${crate_version}" >> $GITHUB_ENV
           echo "VERSION_TAG=${version_tag}" >> $GITHUB_ENV
@@ -1131,7 +1498,7 @@ jobs:
 
       - name: Resolve crate version
         run: |
-          crate_version=$(sed -n 's/^version\s*=\s*"\(.*\)"/\1/p' crates/aztec-barretenberg-sys-rs/Cargo.toml | head -n1)
+          crate_version=$(awk -F '"' '/^version[[:space:]]*=/ { print $2; exit }' crates/aztec-barretenberg-sys-rs/Cargo.toml)
           version_tag="v${crate_version}"
           echo "CRATE_VERSION=${crate_version}" >> $GITHUB_ENV
           echo "VERSION_TAG=${version_tag}" >> $GITHUB_ENV
@@ -1180,7 +1547,7 @@ jobs:
 
       - name: Resolve crate version
         run: |
-          crate_version=$(sed -n 's/^version\s*=\s*"\(.*\)"/\1/p' crates/aztec-barretenberg-sys-rs/Cargo.toml | head -n1)
+          crate_version=$(awk -F '"' '/^version[[:space:]]*=/ { print $2; exit }' crates/aztec-barretenberg-sys-rs/Cargo.toml)
           version_tag="v${crate_version}"
           echo "CRATE_VERSION=${crate_version}" >> $GITHUB_ENV
           echo "VERSION_TAG=${version_tag}" >> $GITHUB_ENV

@@ -227,20 +227,61 @@ if(NOT WASM AND NOT FUZZING AND NOT MOBILE)
     list(APPEND BARRETENBERG_TARGET_OBJECTS $<TARGET_OBJECTS:world_state_objects>)
 endif()
 
+# Native object closure required by the standalone Rust crypto FFI. Keep this
+# deliberately disjoint from BB_PROVER_TARGET_OBJECTS so consumers that need
+# both archive sets never see duplicate strong definitions.
+set(BB_CRYPTO_TARGET_OBJECTS
+    $<TARGET_OBJECTS:common_objects>
+    $<TARGET_OBJECTS:crypto_blake2s_objects>
+    $<TARGET_OBJECTS:crypto_keccak_objects>
+    $<TARGET_OBJECTS:crypto_pedersen_commitment_objects>
+    $<TARGET_OBJECTS:crypto_pedersen_hash_objects>
+    $<TARGET_OBJECTS:crypto_poseidon2_objects>
+    $<TARGET_OBJECTS:crypto_sha256_objects>
+    $<TARGET_OBJECTS:ecc_objects>
+    $<TARGET_OBJECTS:numeric_objects>)
+
+set(BB_PROVER_TARGET_OBJECTS ${BARRETENBERG_TARGET_OBJECTS})
+foreach(BB_CRYPTO_OBJECTS IN LISTS BB_CRYPTO_TARGET_OBJECTS)
+    list(REMOVE_ITEM BB_PROVER_TARGET_OBJECTS "${BB_CRYPTO_OBJECTS}")
+endforeach()
+
 add_library(
     barretenberg
     STATIC
     ${BARRETENBERG_TARGET_OBJECTS}
 )
 
+add_library(bb_rust_crypto_api_objects OBJECT bb_rust_crypto_api.cpp)
+add_library(bb_rust_prover_api_objects OBJECT bb_rust_prover_api.cpp)
+# msgpack-c is populated by an ExternalProject, so fresh parallel builds must
+# complete its download before compiling either standalone shim.
+add_dependencies(bb_rust_crypto_api_objects msgpack-c)
+add_dependencies(bb_rust_prover_api_objects msgpack-c)
+
+add_library(
+    bb_rust_crypto_api
+    STATIC
+    $<TARGET_OBJECTS:bb_rust_crypto_api_objects>
+)
+add_library(
+    bb_rust_prover_api
+    STATIC
+    $<TARGET_OBJECTS:bb_rust_prover_api_objects>
+)
+
+# Compatibility archive exposing the complete historical C ABI. It contains
+# the two disjoint shim objects, while native implementations remain in the
+# corresponding external archives below.
 add_library(
     bb_rust_api
     STATIC
-    bb_rust_api.cpp
+    $<TARGET_OBJECTS:bb_rust_crypto_api_objects>
+    $<TARGET_OBJECTS:bb_rust_prover_api_objects>
 )
-target_link_libraries(bb_rust_api PRIVATE barretenberg)
 if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
-    target_compile_options(bb_rust_api PRIVATE -Wno-error=deprecated-copy)
+    target_compile_options(bb_rust_crypto_api_objects PRIVATE -Wno-error=deprecated-copy)
+    target_compile_options(bb_rust_prover_api_objects PRIVATE -Wno-error=deprecated-copy)
 endif()
 
 # bb-external: A complete static library for external consumers (e.g. barretenberg-rs).
@@ -248,12 +289,32 @@ endif()
 # This provides a single library file that external bindings can link against.
 if(NOT WASM)
     add_library(
+        bb-crypto-external
+        STATIC
+        ${BB_CRYPTO_TARGET_OBJECTS}
+        $<TARGET_OBJECTS:env_objects>
+    )
+    add_library(
+        bb-prover-external
+        STATIC
+        ${BB_PROVER_TARGET_OBJECTS}
+        $<TARGET_OBJECTS:vm2_stub>
+    )
+    target_link_libraries(bb-prover-external PUBLIC bb-crypto-external)
+
+    add_library(
         bb-external
         STATIC
         ${BARRETENBERG_TARGET_OBJECTS}
         $<TARGET_OBJECTS:env_objects>
         $<TARGET_OBJECTS:vm2_stub>
     )
+
+    # Raw static-archive consumers must preserve this dependency order:
+    # prover shim, prover external, crypto shim (when used), crypto external.
+    target_link_libraries(bb_rust_crypto_api PRIVATE bb-crypto-external)
+    target_link_libraries(bb_rust_prover_api PRIVATE bb-prover-external bb-crypto-external)
+    target_link_libraries(bb_rust_api PRIVATE bb-external)
 endif()
 
 if(WASM)
