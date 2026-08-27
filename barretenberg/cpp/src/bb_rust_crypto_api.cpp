@@ -9,11 +9,11 @@
 #include "bb_rust_api_internal.hpp"
 
 #include "barretenberg/crypto/blake2s/blake2s.hpp"
+#include "barretenberg/crypto/hmac/hmac.hpp"
+#include "barretenberg/crypto/pedersen_hash/pedersen.hpp"
 #include "barretenberg/crypto/poseidon2/poseidon2.hpp"
 #include "barretenberg/crypto/poseidon2/poseidon2_params.hpp"
 #include "barretenberg/crypto/poseidon2/poseidon2_permutation.hpp"
-#include "barretenberg/crypto/schnorr/schnorr.hpp"
-#include "barretenberg/crypto/schnorr/schnorr.tcc"
 #include "barretenberg/ecc/curves/grumpkin/grumpkin.hpp"
 
 extern "C" {
@@ -75,22 +75,28 @@ int bb_poseidon2_permutation_bn254(const uint8_t* inputs_be, size_t element_coun
     }
 }
 
-
-int bb_grumpkin_ec_add(
-    const uint8_t pk1_x_be[32],
-    const uint8_t pk1_y_be[32],
-    const uint8_t pk2_x_be[32],
-    const uint8_t pk2_y_be[32],
-    uint8_t out_x_be[32],
-    uint8_t out_y_be[32])
+int bb_grumpkin_ec_add(const uint8_t pk1_x_be[32],
+                       const uint8_t pk1_y_be[32],
+                       const uint8_t pk2_x_be[32],
+                       const uint8_t pk2_y_be[32],
+                       uint8_t out_x_be[32],
+                       uint8_t out_y_be[32])
 {
     try {
         auto A = grumpkin_affine_from_xy(pk1_x_be, pk1_y_be);
         auto B = grumpkin_affine_from_xy(pk2_x_be, pk2_y_be);
+        if (!A.on_curve() || !B.on_curve() || A.is_point_at_infinity() || B.is_point_at_infinity()) {
+            return 2;
+        }
         bb::grumpkin::g1::element eA(A);
         bb::grumpkin::g1::element eB(B);
         auto S = eA + eB;
         bb::grumpkin::g1::affine_element R(S);
+        if (R.is_point_at_infinity()) {
+            std::fill(out_x_be, out_x_be + 32, 0);
+            std::fill(out_y_be, out_y_be + 32, 0);
+            return 0;
+        }
         auto nx = R.x.from_montgomery_form();
         auto ny = R.y.from_montgomery_form();
         le_limbs_to_be32(nx.data, out_x_be);
@@ -108,7 +114,10 @@ int bb_grumpkin_compress(const uint8_t pk_x_be[32], const uint8_t pk_y_be[32], u
         if (!P.on_curve() || P.is_point_at_infinity()) {
             return 2;
         }
-        auto compressed = P.compress();
+        uint256_t compressed(P.x);
+        if (uint256_t(P.y).get_bit(0)) {
+            compressed.data[3] |= bb::group_elements::UINT256_TOP_LIMB_MSB;
+        }
         uint256_to_be32(compressed, out_comp_be);
         return 0;
     } catch (...) {
@@ -142,16 +151,15 @@ int bb_grumpkin_decompress(const uint8_t comp_be[32], uint8_t out_x_be[32], uint
 // Output:
 //  - out_x_be, out_y_be: 32-byte big-endian coordinates of result (0,0) if infinity
 //  - out_infinite: set to 1 if result is infinity, 0 otherwise
-int bb_grumpkin_msm(
-    const uint8_t* xs_be,
-    const uint8_t* ys_be,
-    const uint8_t* inf_flags,
-    size_t n_points,
-    const uint8_t* scalars_lo_be,
-    const uint8_t* scalars_hi_be,
-    uint8_t out_x_be[32],
-    uint8_t out_y_be[32],
-    uint8_t* out_infinite)
+int bb_grumpkin_msm(const uint8_t* xs_be,
+                    const uint8_t* ys_be,
+                    const uint8_t* inf_flags,
+                    size_t n_points,
+                    const uint8_t* scalars_lo_be,
+                    const uint8_t* scalars_hi_be,
+                    uint8_t out_x_be[32],
+                    uint8_t out_y_be[32],
+                    uint8_t* out_infinite)
 {
     try {
         bb::grumpkin::g1::element acc = bb::grumpkin::g1::element::zero();
@@ -167,6 +175,9 @@ int bb_grumpkin_msm(
                 bb::grumpkin::fq x(xl[0], xl[1], xl[2], xl[3]);
                 bb::grumpkin::fq y(yl[0], yl[1], yl[2], yl[3]);
                 P = bb::grumpkin::g1::affine_element(x.to_montgomery_form(), y.to_montgomery_form());
+                if (!P.on_curve()) {
+                    return 2;
+                }
             }
 
             // Combine high and low 128-bit limbs (big-endian) into 32 bytes
@@ -178,7 +189,7 @@ int bb_grumpkin_msm(
             // Interpret as big-endian integer modulo r
             // barretenberg fr has constructor from 4 limbs (little-endian 64-bit limbs)
             // Convert 32-be into 4 le64 limbs
-            uint64_t fr_limbs[4] = {0, 0, 0, 0};
+            uint64_t fr_limbs[4] = { 0, 0, 0, 0 };
             // scalar_be is big-endian; convert to 4 little-endian 64-bit limbs
             for (size_t limb = 0; limb < 4; ++limb) {
                 uint64_t v = 0;
@@ -198,7 +209,8 @@ int bb_grumpkin_msm(
 
         bb::grumpkin::g1::affine_element R(acc);
         if (R.is_point_at_infinity()) {
-            if (out_infinite) *out_infinite = 1;
+            if (out_infinite)
+                *out_infinite = 1;
             std::memset(out_x_be, 0, 32);
             std::memset(out_y_be, 0, 32);
         } else {
@@ -206,7 +218,8 @@ int bb_grumpkin_msm(
             auto ny = R.y.from_montgomery_form();
             le_limbs_to_be32(nx.data, out_x_be);
             le_limbs_to_be32(ny.data, out_y_be);
-            if (out_infinite) *out_infinite = 0;
+            if (out_infinite)
+                *out_infinite = 0;
         }
         return 0;
     } catch (...) {
@@ -219,11 +232,7 @@ int bb_grumpkin_msm(
 // using a domain-separated Pedersen commit. When a native hash_to_curve is
 // available, this function can delegate to it.
 int bb_grumpkin_hash_to_curve(
-    const uint8_t* inputs_be,
-    size_t n_elems,
-    uint32_t domain,
-    uint8_t out_x_be[32],
-    uint8_t out_y_be[32])
+    const uint8_t* inputs_be, size_t n_elems, uint32_t domain, uint8_t out_x_be[32], uint8_t out_y_be[32])
 {
     try {
         // Domain-separated seed: BE(domain) || inputs_be (concatenated)
@@ -249,10 +258,36 @@ int bb_grumpkin_hash_to_curve(
     }
 }
 
-void bb_free(uint8_t* ptr) { std::free(ptr); }
+void bb_free(uint8_t* ptr)
+{
+    std::free(ptr);
+}
 
 } // extern "C"
 
+namespace {
+
+using GrumpkinAffine = bb::grumpkin::g1::affine_element;
+
+std::array<uint8_t, 32> legacy_schnorr_blake2s_challenge(const uint8_t* msg,
+                                                         size_t msg_len,
+                                                         const GrumpkinAffine& public_key,
+                                                         const GrumpkinAffine& nonce)
+{
+    // Keep the pre-v5 Usernode Schnorr challenge exactly as it was:
+    // Blake2s(serialize(Pedersen(R.x, public_key.x, public_key.y)) || message).
+    // Barretenberg v5 changed its native Schnorr protocol to Poseidon2 over a
+    // field element, which is intentionally not wire-compatible with this API.
+    auto compressed_keys = bb::crypto::pedersen_hash::hash({ nonce.x, public_key.x, public_key.y });
+    std::vector<uint8_t> challenge_input(32);
+    decltype(compressed_keys)::serialize_to_buffer(compressed_keys, challenge_input.data());
+    if (msg_len != 0) {
+        challenge_input.insert(challenge_input.end(), msg, msg + msg_len);
+    }
+    return bb::crypto::blake2s(challenge_input);
+}
+
+} // namespace
 
 extern "C" {
 int bb_grumpkin_derive_pubkey(const uint8_t sk32[32], uint8_t out_x_be[32], uint8_t out_y_be[32])
@@ -262,7 +297,8 @@ int bb_grumpkin_derive_pubkey(const uint8_t sk32[32], uint8_t out_x_be[32], uint
         be32_to_le_limbs(sk32, sl);
         bb::grumpkin::fr sk(sl[0], sl[1], sl[2], sl[3]);
         sk = sk.to_montgomery_form();
-        bb::grumpkin::g1::affine_element pk = bb::grumpkin::g1::one * sk;
+        bb::grumpkin::g1::affine_element pk =
+            bb::grumpkin::g1::element(bb::grumpkin::g1::one).mul_const_time(sk).to_affine_const_time();
         auto nx = pk.x.from_montgomery_form();
         auto ny = pk.y.from_montgomery_form();
         le_limbs_to_be32(nx.data, out_x_be);
@@ -273,32 +309,29 @@ int bb_grumpkin_derive_pubkey(const uint8_t sk32[32], uint8_t out_x_be[32], uint
     }
 }
 
-// Blake2s prehash hasher for standard Schnorr
-struct Blake2sBytesHasher {
-    static constexpr size_t BLOCK_SIZE = 64;
-    static constexpr size_t OUTPUT_SIZE = 32;
-    static std::vector<uint8_t> hash(const std::vector<uint8_t>& message)
-    {
-        auto out = bb::crypto::blake2s(message);
-        return std::vector<uint8_t>(out.begin(), out.end());
-    }
-};
-int bb_schnorr_blake2s_sign(const uint8_t* msg,
-                             size_t msg_len,
-                             const uint8_t* sk32,
-                             uint8_t sig64_out[64])
+int bb_schnorr_blake2s_sign(const uint8_t* msg, size_t msg_len, const uint8_t* sk32, uint8_t sig64_out[64])
 {
     try {
-        std::string message(reinterpret_cast<const char*>(msg), msg_len);
+        if ((msg == nullptr && msg_len != 0) || sk32 == nullptr || sig64_out == nullptr) {
+            return 2;
+        }
         uint64_t sl[4];
         be32_to_le_limbs(sk32, sl);
         bb::grumpkin::fr sk(sl[0], sl[1], sl[2], sl[3]);
         sk = sk.to_montgomery_form();
-        bb::grumpkin::g1::affine_element pk = bb::grumpkin::g1::one * sk;
-        bb::crypto::schnorr_key_pair<bb::grumpkin::fr, bb::grumpkin::g1> kp{ sk, pk };
-        auto sig = bb::crypto::schnorr_construct_signature<Blake2sBytesHasher, bb::grumpkin::fq>(message, kp);
-        std::memcpy(sig64_out, sig.s.data(), 32);
-        std::memcpy(sig64_out + 32, sig.e.data(), 32);
+        GrumpkinAffine public_key =
+            bb::grumpkin::g1::element(bb::grumpkin::g1::one).mul_const_time(sk).to_affine_const_time();
+
+        bb::grumpkin::fr nonce_scalar = bb::grumpkin::fr::random_element();
+        GrumpkinAffine nonce =
+            bb::grumpkin::g1::element(bb::grumpkin::g1::one).mul_const_time(nonce_scalar).to_affine_const_time();
+        auto challenge_bytes = legacy_schnorr_blake2s_challenge(msg, msg_len, public_key, nonce);
+        bb::grumpkin::fr challenge = bb::grumpkin::fr::serialize_from_buffer(challenge_bytes.data());
+        bb::grumpkin::fr response = nonce_scalar - (sk * challenge);
+        bb::crypto::secure_erase_bytes(&nonce_scalar, sizeof(nonce_scalar));
+
+        bb::grumpkin::fr::serialize_to_buffer(response, sig64_out);
+        std::copy(challenge_bytes.begin(), challenge_bytes.end(), sig64_out + 32);
         return 0;
     } catch (...) {
         return 1;
@@ -313,20 +346,40 @@ int bb_schnorr_blake2s_verify_xy(const uint8_t* msg,
                                  bool* out_ok)
 {
     try {
-        std::string message(reinterpret_cast<const char*>(msg), msg_len);
+        if ((msg == nullptr && msg_len != 0) || sig64 == nullptr || pkx32 == nullptr || pky32 == nullptr) {
+            return 2;
+        }
         uint64_t xl[4], yl[4];
         be32_to_le_limbs(pkx32, xl);
         be32_to_le_limbs(pky32, yl);
         bb::grumpkin::fq x(xl[0], xl[1], xl[2], xl[3]);
         bb::grumpkin::fq y(yl[0], yl[1], yl[2], yl[3]);
-        bb::grumpkin::g1::affine_element pubk(x.to_montgomery_form(), y.to_montgomery_form());
-        std::array<uint8_t, 32> s_arr;
-        std::array<uint8_t, 32> e_arr;
-        std::copy(sig64, sig64 + 32, s_arr.begin());
-        std::copy(sig64 + 32, sig64 + 64, e_arr.begin());
-        bb::crypto::schnorr_signature sig{ s_arr, e_arr };
-        bool ok = bb::crypto::schnorr_verify_signature<Blake2sBytesHasher, bb::grumpkin::fq, bb::grumpkin::fr, bb::grumpkin::g1>(message, pubk, sig);
-        if (out_ok) *out_ok = ok;
+        GrumpkinAffine public_key(x.to_montgomery_form(), y.to_montgomery_form());
+        if (!public_key.on_curve() || public_key.is_point_at_infinity()) {
+            if (out_ok != nullptr) {
+                *out_ok = false;
+            }
+            return 0;
+        }
+
+        bb::grumpkin::fr response = bb::grumpkin::fr::serialize_from_buffer(sig64);
+        bb::grumpkin::fr challenge = bb::grumpkin::fr::serialize_from_buffer(sig64 + 32);
+        if (response == 0 || challenge == 0) {
+            if (out_ok != nullptr) {
+                *out_ok = false;
+            }
+            return 0;
+        }
+
+        GrumpkinAffine nonce(bb::grumpkin::g1::element(public_key) * challenge + bb::grumpkin::g1::one * response);
+        bool ok = false;
+        if (!nonce.is_point_at_infinity()) {
+            auto expected_challenge = legacy_schnorr_blake2s_challenge(msg, msg_len, public_key, nonce);
+            ok = std::equal(expected_challenge.begin(), expected_challenge.end(), sig64 + 32);
+        }
+        if (out_ok != nullptr) {
+            *out_ok = ok;
+        }
         return 0;
     } catch (...) {
         return 1;

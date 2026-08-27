@@ -720,23 +720,23 @@ impl BarretenbergBlackBoxSolver {
 }
 
 impl acvm::blackbox_solver::BlackBoxFunctionSolver<FE> for BarretenbergBlackBoxSolver {
-    fn pedantic_solving(&self) -> bool {
-        true
-    }
-
     fn multi_scalar_mul(
         &self,
         _points: &[FE],
         _scalars_lo: &[FE],
         _scalars_hi: &[FE],
-    ) -> std::result::Result<(FE, FE, FE), acvm::BlackBoxResolutionError> {
-        if _points.len() % 3 != 0
+        _predicate: bool,
+    ) -> std::result::Result<(FE, FE), acvm::BlackBoxResolutionError> {
+        if !_predicate {
+            return Ok((FE::zero(), FE::zero()));
+        }
+        if _points.len() % 2 != 0
             || _scalars_lo.len() != _scalars_hi.len()
-            || _points.len() / 3 != _scalars_lo.len()
+            || _points.len() / 2 != _scalars_lo.len()
         {
             return Err(acvm::BlackBoxResolutionError::Failed(
                 acir::BlackBoxFunc::MultiScalarMul,
-                "length mismatch: points must be triplets and match scalars".into(),
+                "length mismatch: points must be pairs and match scalars".into(),
             ));
         }
         let n = _scalars_lo.len();
@@ -744,23 +744,47 @@ impl acvm::blackbox_solver::BlackBoxFunctionSolver<FE> for BarretenbergBlackBoxS
         let mut ys = Vec::with_capacity(n * 32);
         let mut inf = Vec::with_capacity(n);
         for i in 0..n {
-            let x_be = _points[3 * i].to_be_bytes();
-            let y_be = _points[3 * i + 1].to_be_bytes();
-            let inf_fe = _points[3 * i + 2];
+            let x = _points[2 * i];
+            let y = _points[2 * i + 1];
+            let x_be = x.to_be_bytes();
+            let y_be = y.to_be_bytes();
             xs.extend_from_slice(&x_be[x_be.len() - 32..]);
             ys.extend_from_slice(&y_be[y_be.len() - 32..]);
-            // interpret non-zero as 1
-            let is_inf = if inf_fe.is_zero() { 0u8 } else { 1u8 };
-            inf.push(is_inf);
+            // Noir beta.22 represents the point at infinity as (0, 0).
+            inf.push(u8::from(x.is_zero() && y.is_zero()));
         }
         // scalars are split into two 128-bit limbs, big-endian each
         let mut slo = Vec::with_capacity(n * 16);
         let mut shi = Vec::with_capacity(n * 16);
         for i in 0..n {
-            let lo_be = _scalars_lo[i].to_be_bytes();
-            let hi_be = _scalars_hi[i].to_be_bytes();
-            slo.extend_from_slice(&lo_be[lo_be.len() - 16..]);
-            shi.extend_from_slice(&hi_be[hi_be.len() - 16..]);
+            let Some(lo) = _scalars_lo[i].try_into_u128() else {
+                return Err(acvm::BlackBoxResolutionError::Failed(
+                    acir::BlackBoxFunc::MultiScalarMul,
+                    "low scalar limb is not less than 2^128".into(),
+                ));
+            };
+            let Some(hi) = _scalars_hi[i].try_into_u128() else {
+                return Err(acvm::BlackBoxResolutionError::Failed(
+                    acir::BlackBoxFunc::MultiScalarMul,
+                    "high scalar limb is not less than 2^128".into(),
+                ));
+            };
+            let mut scalar_be = [0u8; 32];
+            scalar_be[..16].copy_from_slice(&hi.to_be_bytes());
+            scalar_be[16..].copy_from_slice(&lo.to_be_bytes());
+            const GRUMPKIN_SCALAR_MODULUS_BE: [u8; 32] = [
+                0x30, 0x64, 0x4e, 0x72, 0xe1, 0x31, 0xa0, 0x29, 0xb8, 0x50, 0x45, 0xb6, 0x81, 0x81,
+                0x58, 0x5d, 0x97, 0x81, 0x6a, 0x91, 0x68, 0x71, 0xca, 0x8d, 0x3c, 0x20, 0x8c, 0x16,
+                0xd8, 0x7c, 0xfd, 0x47,
+            ];
+            if scalar_be >= GRUMPKIN_SCALAR_MODULUS_BE {
+                return Err(acvm::BlackBoxResolutionError::Failed(
+                    acir::BlackBoxFunc::MultiScalarMul,
+                    "scalar is not in the Grumpkin scalar field".into(),
+                ));
+            }
+            slo.extend_from_slice(&scalar_be[16..]);
+            shi.extend_from_slice(&scalar_be[..16]);
         }
         let mut out_x = [0u8; 32];
         let mut out_y = [0u8; 32];
@@ -784,22 +808,35 @@ impl acvm::blackbox_solver::BlackBoxFunctionSolver<FE> for BarretenbergBlackBoxS
                 "bb grumpkin msm failed".into(),
             ));
         }
-        Ok((
-            FE::from_be_bytes_reduce(&out_x),
-            FE::from_be_bytes_reduce(&out_y),
-            FE::from(out_inf as u128),
-        ))
+        if out_inf != 0 {
+            Ok((FE::zero(), FE::zero()))
+        } else {
+            Ok((
+                FE::from_be_bytes_reduce(&out_x),
+                FE::from_be_bytes_reduce(&out_y),
+            ))
+        }
     }
 
     fn ec_add(
         &self,
         _input1_x: &FE,
         _input1_y: &FE,
-        _input1_infinite: &FE,
         _input2_x: &FE,
         _input2_y: &FE,
-        _input2_infinite: &FE,
-    ) -> std::result::Result<(FE, FE, FE), acvm::BlackBoxResolutionError> {
+        _predicate: bool,
+    ) -> std::result::Result<(FE, FE), acvm::BlackBoxResolutionError> {
+        if !_predicate {
+            return Ok((FE::zero(), FE::zero()));
+        }
+        let input1_infinite = _input1_x.is_zero() && _input1_y.is_zero();
+        let input2_infinite = _input2_x.is_zero() && _input2_y.is_zero();
+        if input1_infinite {
+            return Ok((*_input2_x, *_input2_y));
+        }
+        if input2_infinite {
+            return Ok((*_input1_x, *_input1_y));
+        }
         let x1 = _input1_x.to_be_bytes();
         let y1 = _input1_y.to_be_bytes();
         let x2 = _input2_x.to_be_bytes();
@@ -822,11 +859,9 @@ impl acvm::blackbox_solver::BlackBoxFunctionSolver<FE> for BarretenbergBlackBoxS
                 "bb grumpkin ec_add failed".into(),
             ));
         }
-        let inf = FE::zero();
         Ok((
             FE::from_be_bytes_reduce(&out_x),
             FE::from_be_bytes_reduce(&out_y),
-            inf,
         ))
     }
 
@@ -990,6 +1025,7 @@ pub fn grumpkin_hash_to_curve(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use acvm::blackbox_solver::BlackBoxFunctionSolver;
 
     fn scalar_bytes(val: u64) -> [u8; 32] {
         let mut out = [0u8; 32];
@@ -1022,5 +1058,202 @@ mod tests {
     #[test]
     fn grumpkin_decompress_rejects_invalid_bytes() {
         assert!(grumpkin_decompress([0u8; 32]).is_err());
+    }
+
+    #[test]
+    fn legacy_schnorr_blake2s_roundtrip_and_tamper_rejection() {
+        let sk = scalar_bytes(7);
+        let message = [42u8; 32];
+        let (x, y) = grumpkin_derive_pubkey(&sk).expect("derive");
+        let signature = schnorr_blake2s_sign(&message, &sk).expect("sign");
+
+        assert!(
+            schnorr_blake2s_verify_xy(&message, &signature, &x, &y).expect("verify"),
+            "new signature should verify"
+        );
+
+        let mut tampered_message = message;
+        tampered_message[0] ^= 1;
+        assert!(
+            !schnorr_blake2s_verify_xy(&tampered_message, &signature, &x, &y)
+                .expect("verify tampered message"),
+            "signature must be bound to the message"
+        );
+
+        let mut tampered_signature = signature;
+        tampered_signature[0] ^= 1;
+        assert!(
+            !schnorr_blake2s_verify_xy(&message, &tampered_signature, &x, &y)
+                .expect("verify tampered signature"),
+            "tampered signature must fail"
+        );
+    }
+
+    #[test]
+    fn verifies_signature_created_by_usernode_4_2_release() {
+        fn bytes<const N: usize>(value: &str) -> [u8; N] {
+            hex::decode(value)
+                .expect("valid hex")
+                .try_into()
+                .expect("correct byte length")
+        }
+
+        let message: [u8; 32] = std::array::from_fn(|index| index as u8);
+        let public_key_x =
+            bytes("0e602b9dd6a3e8d039a17f069add3f9c2a187a8f629a1de60a33a8067b9b2842");
+        let public_key_y =
+            bytes("14cc8e83df1b5cbb163bd2c94005cb0707fe570def5a165242b1c1419cb014cb");
+        let signature = bytes(
+            "1e2f50239bf4975346409430e614ecc1f112cecd7c8101eeaa0ccbd12f1259a5\
+             7c82d485322deabf32d5d8333f6ecb77dcb712147c98e0683e10a2ca744013b3",
+        );
+
+        assert!(
+            schnorr_blake2s_verify_xy(&message, &signature, &public_key_x, &public_key_y,)
+                .expect("verify v4.2 signature"),
+            "v5 shim must preserve signatures created by the previous Usernode release"
+        );
+    }
+
+    #[test]
+    fn beta_22_black_box_solver_preserves_jit_curve_semantics() {
+        let solver = BarretenbergBlackBoxSolver;
+        let (generator_x_bytes, generator_y_bytes) =
+            grumpkin_derive_pubkey(&scalar_bytes(1)).expect("derive generator");
+        let generator_x = FE::from_be_bytes_reduce(&generator_x_bytes);
+        let generator_y = FE::from_be_bytes_reduce(&generator_y_bytes);
+
+        let (msm_x, msm_y) = solver
+            .multi_scalar_mul(
+                &[generator_x, generator_y],
+                &[FE::one()],
+                &[FE::zero()],
+                true,
+            )
+            .expect("one-point MSM");
+        assert_eq!((msm_x, msm_y), (generator_x, generator_y));
+        assert_eq!(
+            solver
+                .multi_scalar_mul(&[], &[], &[], false)
+                .expect("disabled MSM"),
+            (FE::zero(), FE::zero())
+        );
+
+        let high_limb_result = solver
+            .multi_scalar_mul(
+                &[generator_x, generator_y],
+                &[FE::one()],
+                &[FE::from(2u128)],
+                true,
+            )
+            .expect("MSM with a nonzero high limb");
+        assert_eq!(
+            high_limb_result,
+            (
+                FE::from_be_bytes_reduce(
+                    &hex::decode(
+                        "0702ab9c7038eeecc179b4f209991bcb68c7cb05bf4c532d804ccac36199c9a9"
+                    )
+                    .expect("valid x coordinate"),
+                ),
+                FE::from_be_bytes_reduce(
+                    &hex::decode(
+                        "23f10e9e43a3ae8d75d24154e796aae12ae7af546716e8f81a2564f1b5814130"
+                    )
+                    .expect("valid y coordinate"),
+                ),
+            ),
+            "split 128-bit scalar limbs must follow the beta.22 ordering"
+        );
+
+        assert_eq!(
+            solver
+                .ec_add(&FE::zero(), &FE::zero(), &generator_x, &generator_y, true,)
+                .expect("infinity plus generator"),
+            (generator_x, generator_y)
+        );
+
+        let (twice_x_bytes, twice_y_bytes) =
+            grumpkin_derive_pubkey(&scalar_bytes(2)).expect("derive twice generator");
+        let twice_generator = (
+            FE::from_be_bytes_reduce(&twice_x_bytes),
+            FE::from_be_bytes_reduce(&twice_y_bytes),
+        );
+        assert_eq!(
+            solver
+                .ec_add(&generator_x, &generator_y, &generator_x, &generator_y, true,)
+                .expect("double generator"),
+            twice_generator
+        );
+        assert_eq!(
+            solver
+                .ec_add(
+                    &generator_x,
+                    &generator_y,
+                    &generator_x,
+                    &(-generator_y),
+                    true,
+                )
+                .expect("point plus inverse"),
+            (FE::zero(), FE::zero())
+        );
+    }
+
+    #[test]
+    fn beta_22_black_box_solver_rejects_invalid_curve_inputs() {
+        let solver = BarretenbergBlackBoxSolver;
+        let (generator_x_bytes, generator_y_bytes) =
+            grumpkin_derive_pubkey(&scalar_bytes(1)).expect("derive generator");
+        let generator = [
+            FE::from_be_bytes_reduce(&generator_x_bytes),
+            FE::from_be_bytes_reduce(&generator_y_bytes),
+        ];
+
+        let mut too_wide_limb = [0u8; 32];
+        too_wide_limb[15] = 1;
+        let too_wide_limb = FE::from_be_bytes_reduce(&too_wide_limb);
+        assert!(
+            solver
+                .multi_scalar_mul(&generator, &[too_wide_limb], &[FE::zero()], true)
+                .is_err(),
+            "scalar limbs wider than 128 bits must be rejected"
+        );
+
+        let modulus =
+            hex::decode("30644e72e131a029b85045b68181585d97816a916871ca8d3c208c16d87cfd47")
+                .expect("valid Grumpkin scalar modulus");
+        let high = FE::from_be_bytes_reduce(&modulus[..16]);
+        let low = FE::from_be_bytes_reduce(&modulus[16..]);
+        assert!(
+            solver
+                .multi_scalar_mul(&generator, &[low], &[high], true)
+                .is_err(),
+            "the Grumpkin scalar modulus itself must be rejected"
+        );
+
+        assert!(
+            solver
+                .multi_scalar_mul(&[FE::one(), FE::one()], &[FE::one()], &[FE::zero()], true)
+                .is_err(),
+            "off-curve points must be rejected"
+        );
+        assert!(
+            solver
+                .ec_add(&FE::one(), &FE::one(), &generator[0], &generator[1], true,)
+                .is_err(),
+            "embedded curve addition must reject off-curve points"
+        );
+
+        assert_eq!(
+            solver
+                .multi_scalar_mul(
+                    &[FE::one(), FE::one()],
+                    &[too_wide_limb],
+                    &[too_wide_limb],
+                    false,
+                )
+                .expect("disabled MSM ignores invalid inputs"),
+            (FE::zero(), FE::zero())
+        );
     }
 }

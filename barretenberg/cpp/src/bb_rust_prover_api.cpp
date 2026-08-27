@@ -743,7 +743,7 @@ int bb_uhz_leaf_vk(const uint8_t* vk, size_t vk_len, uint8_t** out_vk, size_t* o
         out_io.pairing_inputs = output.points_accumulator;
         out_io.set_public();
 
-        builder.finalize_circuit(true);
+        builder.finalize_circuit();
         auto prover_instance = std::make_shared<ProverInstance>(builder);
         auto wrapped_vk = std::make_shared<bb::MegaFlavor::VerificationKey>(prover_instance->get_precomputed());
         auto wrapped_vk_bytes = to_buffer(*wrapped_vk);
@@ -840,7 +840,7 @@ int bb_uhz_leaf_wrap(const uint8_t* proof,
         out_io.pairing_inputs = output.points_accumulator;
         out_io.set_public();
 
-        builder.finalize_circuit(true);
+        builder.finalize_circuit();
         auto prover_instance = std::make_shared<ProverInstance>(builder);
         auto wrapped_vk = std::make_shared<bb::MegaFlavor::VerificationKey>(prover_instance->get_precomputed());
         bb::UltraProver_<bb::MegaFlavor> prover{ prover_instance, wrapped_vk };

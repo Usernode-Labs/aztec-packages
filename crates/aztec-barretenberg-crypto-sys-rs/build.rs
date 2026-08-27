@@ -244,12 +244,9 @@ fn configure_and_build(repo_root: &Path, build_dir: &Path) {
         .arg("-DCMAKE_C_FLAGS_RELWITHDEBINFO=-O2 -g -DNDEBUG")
         .arg("-DCMAKE_CXX_FLAGS_RELWITHDEBINFO=-O2 -g -DNDEBUG")
         .arg("-DCMAKE_POSITION_INDEPENDENT_CODE=ON")
-        .arg("-DDISABLE_AZTEC_VM=ON")
-        .arg("-DENABLE_TRACY=OFF")
-        .arg("-DBB_BUILD_TRANSLATOR_VM=ON")
-        .arg("-DBB_BUILD_NODEJS_MODULE=OFF")
-        .arg("-DBB_ENABLE_BENCH=OFF")
-        .arg("-DBB_ENABLE_TESTS=OFF");
+        .arg("-DAVM=OFF")
+        .arg("-DBB_LITE=ON")
+        .arg("-DENABLE_TRACY=OFF");
 
     for (environment, cmake) in [
         ("CC", "CMAKE_C_COMPILER"),

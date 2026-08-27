@@ -1,20 +1,19 @@
 [package]
 name = "aztec-barretenberg-rs"
-version = "4.2.0-aztecnr-rc.2-usernode.10"
+version = "5.0.0-usernode.1"
 edition = "2021"
 license = "MIT"
 description = "Safe Rust API for Barretenberg MegaHonk proving/verification and merge; ACVM execution always on."
 
 [dependencies]
-aztec-barretenberg-sys-rs = { path = "../aztec-barretenberg-sys-rs", version = "4.2.0-aztecnr-rc.2-usernode.10" }
+aztec-barretenberg-sys-rs = { path = "../aztec-barretenberg-sys-rs", version = "5.0.0-usernode.1" }
 thiserror = "1"
 
-# ACVM stack for witness execution (always enabled)
-acvm = { git = "https://github.com/noir-lang/noir", tag = "v1.0.0-beta.14", default-features = false, features = ["bn254"] }
-acir = { git = "https://github.com/noir-lang/noir", tag = "v1.0.0-beta.14", default-features = false, features = ["bn254"] }
-acvm_blackbox_solver = { git = "https://github.com/noir-lang/noir", tag = "v1.0.0-beta.14", default-features = false, features = ["bn254"] }
-acir_field = { git = "https://github.com/noir-lang/noir", tag = "v1.0.0-beta.14" }
-brillig = { git = "https://github.com/noir-lang/noir", tag = "v1.0.0-beta.14" }
+# Runtime/schema stack consumed by Usernode's custom ACIR JIT compiler. This
+# does not add the Noir frontend or nargo to Usernode.
+acvm = { git = "https://github.com/noir-lang/noir", tag = "v1.0.0-beta.22", default-features = false, features = ["bn254"] }
+acir = { git = "https://github.com/noir-lang/noir", tag = "v1.0.0-beta.22", default-features = false, features = ["bn254"] }
+acir_field = { git = "https://github.com/noir-lang/noir", tag = "v1.0.0-beta.22" }
 bincode = { version = "1" }
 flate2 = { version = "1", features = ["rust_backend"] }
 
@@ -22,9 +21,11 @@ flate2 = { version = "1", features = ["rust_backend"] }
 serde_json = "1"
 base64 = "0.22"
 flate2 = { version = "1", features = ["rust_backend"] }
-acir = { git = "https://github.com/noir-lang/noir", tag = "v1.0.0-beta.14", default-features = false, features = ["bn254"] }
-acvm = { git = "https://github.com/noir-lang/noir", tag = "v1.0.0-beta.14", default-features = false, features = ["bn254"] }
+acir = { git = "https://github.com/noir-lang/noir", tag = "v1.0.0-beta.22", default-features = false, features = ["bn254"] }
+acvm = { git = "https://github.com/noir-lang/noir", tag = "v1.0.0-beta.22", default-features = false, features = ["bn254"] }
 bincode = "1"
 toml = "0.8"
 hex = "0.4"
 serial_test = "2"
+rmp-serde = "1"
+serde = "1"

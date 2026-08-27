@@ -165,12 +165,10 @@ jobs:
             -DCMAKE_C_COMPILER=${{ env.CC }} \
             -DCMAKE_CXX_COMPILER=${{ env.CXX }} \
             -DCMAKE_CXX_FLAGS="-Wno-error=shorten-64-to-32" \
-            -DBB_BUILD_NODEJS_MODULE=OFF \
-            -DDISABLE_AZTEC_VM=ON \
+            -DBB_LITE=ON \
+            -DAVM=OFF \
             -DENABLE_TRACY=OFF \
-            -DBB_BUILD_TRANSLATOR_VM=ON \
-            -DBB_ENABLE_BENCH=OFF \
-            -DBB_ENABLE_TESTS=OFF
+            -DMULTITHREADING=ON
 
       - name: Configure (CMake + Ninja, Linux aarch64 cross)
         if: runner.os == 'Linux' && contains(matrix.target, 'aarch64') && !contains(matrix.target, 'android')
@@ -193,12 +191,10 @@ jobs:
             -DCMAKE_EXE_LINKER_FLAGS="-fuse-ld=lld" \
             -DCMAKE_SHARED_LINKER_FLAGS="-fuse-ld=lld" \
             -DCMAKE_TRY_COMPILE_TARGET_TYPE=STATIC_LIBRARY \
-            -DBB_BUILD_NODEJS_MODULE=OFF \
-            -DDISABLE_AZTEC_VM=ON \
+            -DBB_LITE=ON \
+            -DAVM=OFF \
             -DENABLE_TRACY=OFF \
-            -DBB_BUILD_TRANSLATOR_VM=ON \
-            -DBB_ENABLE_BENCH=OFF \
-            -DBB_ENABLE_TESTS=OFF
+            -DMULTITHREADING=ON
 
       - name: Install Android NDK (Linux, Android targets)
         if: runner.os == 'Linux' && contains(matrix.target, 'linux-android')
@@ -267,12 +263,10 @@ jobs:
             -DANDROID_PLATFORM="${ANDROID_API}" \
             ${target_arch_arg} \
             ${arm_arg} \
-            -DBB_BUILD_NODEJS_MODULE=OFF \
-            -DDISABLE_AZTEC_VM=ON \
+            -DBB_LITE=ON \
+            -DAVM=OFF \
             -DENABLE_TRACY=OFF \
-            -DBB_BUILD_TRANSLATOR_VM=ON \
-            -DBB_ENABLE_BENCH=OFF \
-            -DBB_ENABLE_TESTS=OFF
+            -DMULTITHREADING=ON
 
       - name: Configure (CMake + Ninja, macOS)
         if: runner.os == 'macOS' && !contains(matrix.target, 'ios')
@@ -283,12 +277,10 @@ jobs:
             -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
             -DCMAKE_C_COMPILER=${{ env.CC }} \
             -DCMAKE_CXX_COMPILER=${{ env.CXX }} \
-            -DBB_BUILD_NODEJS_MODULE=OFF \
-            -DDISABLE_AZTEC_VM=ON \
+            -DBB_LITE=ON \
+            -DAVM=OFF \
             -DENABLE_TRACY=OFF \
-            -DBB_BUILD_TRANSLATOR_VM=ON \
-            -DBB_ENABLE_BENCH=OFF \
-            -DBB_ENABLE_TESTS=OFF
+            -DMULTITHREADING=ON
 
       - name: Configure (CMake + Ninja, iOS simulator arm64)
         if: runner.os == 'macOS' && contains(matrix.target, 'ios-sim')
@@ -327,16 +319,14 @@ jobs:
             -DARM=ON \
             -DCMAKE_C_COMPILER_TARGET=arm64-apple-ios-simulator \
             -DCMAKE_CXX_COMPILER_TARGET=arm64-apple-ios-simulator \
-            -DBB_BUILD_NODEJS_MODULE=OFF \
+            -DBB_LITE=ON \
             -DCMAKE_C_FLAGS="-isystem $PWD/build/compat" \
             -DCMAKE_CXX_FLAGS="-isystem $PWD/build/compat" \
             -DCMAKE_C_COMPILER=${{ env.CC }} \
             -DCMAKE_CXX_COMPILER=${{ env.CXX }} \
-            -DDISABLE_AZTEC_VM=ON \
+            -DAVM=OFF \
             -DENABLE_TRACY=OFF \
-            -DBB_BUILD_TRANSLATOR_VM=ON \
-            -DBB_ENABLE_BENCH=OFF \
-            -DBB_ENABLE_TESTS=OFF
+            -DMULTITHREADING=ON
 
       - name: Configure (CMake + Ninja, iOS device arm64)
         if: runner.os == 'macOS' && matrix.target == 'aarch64-apple-ios'
@@ -375,16 +365,14 @@ jobs:
             -DARM=ON \
             -DCMAKE_C_COMPILER_TARGET=arm64-apple-ios \
             -DCMAKE_CXX_COMPILER_TARGET=arm64-apple-ios \
-            -DBB_BUILD_NODEJS_MODULE=OFF \
+            -DBB_LITE=ON \
             -DCMAKE_C_FLAGS="-isystem $PWD/build/compat" \
             -DCMAKE_CXX_FLAGS="-isystem $PWD/build/compat" \
             -DCMAKE_C_COMPILER=${{ env.CC }} \
             -DCMAKE_CXX_COMPILER=${{ env.CXX }} \
-            -DDISABLE_AZTEC_VM=ON \
+            -DAVM=OFF \
             -DENABLE_TRACY=OFF \
-            -DBB_BUILD_TRANSLATOR_VM=OFF \
-            -DBB_ENABLE_BENCH=OFF \
-            -DBB_ENABLE_TESTS=OFF
+            -DMULTITHREADING=ON
 
       - name: Build split static libraries
         run: |

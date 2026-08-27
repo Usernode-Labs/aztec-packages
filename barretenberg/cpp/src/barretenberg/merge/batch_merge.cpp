@@ -150,7 +150,7 @@ MergeResult merge(const std::vector<uint8_t>& proofA_fields_buf,
         out_io.pairing_inputs = merged_pairing_points;
         out_io.set_public();
 
-        builder.finalize_circuit(true);
+        builder.finalize_circuit();
         auto prover_instance = std::make_shared<ProverInstance>(builder);
         auto vk_out = std::make_shared<bb::MegaFlavor::VerificationKey>(prover_instance->get_precomputed());
         bb::UltraProver_<bb::MegaFlavor> prover{ prover_instance, vk_out };
