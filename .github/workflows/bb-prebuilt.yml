@@ -10,6 +10,11 @@ on:
         description: Release tag to build/publish, including the leading v (e.g., v2.0.3-usernode.1)
         required: false
         default: ""
+      source_ref:
+        description: Source tag, branch, or commit to build (defaults to this workflow commit)
+        type: string
+        required: false
+        default: ""
       publish:
         description: Publish release assets after building
         type: boolean
@@ -19,7 +24,25 @@ permissions:
   contents: write
 
 jobs:
+  resolve-source:
+    name: Resolve immutable build source
+    runs-on: ubuntu-latest
+    outputs:
+      commit: ${{ steps.source.outputs.commit }}
+    steps:
+      - name: Checkout requested source
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.source_ref || github.sha }}
+          submodules: false
+      - name: Pin source commit
+        id: source
+        shell: bash
+        run: |
+          echo "commit=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
   build:
+    needs: resolve-source
     name: Build prebuilts (${{ matrix.target }})
     strategy:
       fail-fast: false
@@ -37,13 +60,13 @@ jobs:
           - runner: ubuntu-22.04
             target: x86_64-linux-android
             os_tag: android-x64
-          - runner: macos-14
+          - runner: macos-15
             target: aarch64-apple-darwin
             os_tag: macos-arm64
-          - runner: macos-14
+          - runner: macos-15
             target: aarch64-apple-ios-sim
             os_tag: ios-sim-arm64
-          - runner: macos-14
+          - runner: macos-15
             target: aarch64-apple-ios
             os_tag: ios-arm64
     runs-on: ${{ matrix.runner }}
@@ -51,6 +74,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
         with:
+          ref: ${{ needs.resolve-source.outputs.commit }}
           submodules: recursive
 
       - name: Resolve crate version
@@ -590,6 +614,7 @@ jobs:
   release:
     name: Publish release assets
     needs:
+      - resolve-source
       - build
       - consumer-test
       - consumer-test-aarch64
@@ -604,6 +629,7 @@ jobs:
       - name: Checkout (for tagging)
         uses: actions/checkout@v4
         with:
+          ref: ${{ needs.resolve-source.outputs.commit }}
           fetch-depth: 0
           submodules: false
       - name: Download artifacts
@@ -717,6 +743,7 @@ jobs:
       - name: Upload assets (create/update release)
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SOURCE_COMMIT: ${{ needs.resolve-source.outputs.commit }}
         run: |
           set -euxo pipefail
           tag="$VERSION_TAG"
@@ -730,8 +757,8 @@ jobs:
                 $2 == ref "^{}" { peeled = $1 }
                 END { print peeled ? peeled : commit }
               ')
-              if [ "$tag_commit" != "$GITHUB_SHA" ]; then
-                echo "ERROR: release tag $tag points to $tag_commit, but artifacts were built from $GITHUB_SHA" >&2
+              if [ "$tag_commit" != "$SOURCE_COMMIT" ]; then
+                echo "ERROR: release tag $tag points to $tag_commit, but artifacts were built from $SOURCE_COMMIT" >&2
                 return 1
               fi
             else
@@ -745,7 +772,7 @@ jobs:
           }
           assert_tag_target allow-missing
           # New tags must identify the checked-out build, not the default branch.
-          gh release view "$tag" >/dev/null 2>&1 || gh release create "$tag" --target "$GITHUB_SHA" -t "$tag" -n ""
+          gh release view "$tag" >/dev/null 2>&1 || gh release create "$tag" --target "$SOURCE_COMMIT" -t "$tag" -n ""
           # Recheck after creation before replacing any assets, including if a tag
           # was created concurrently or an existing release has lost its tag.
           assert_tag_target
@@ -761,7 +788,7 @@ jobs:
 
   consumer-test:
     name: Consumer test (Linux x86_64)
-    needs: build
+    needs: [resolve-source, build]
     runs-on: ubuntu-22.04
     env:
       TARGET: x86_64-unknown-linux-gnu
@@ -769,6 +796,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
         with:
+          ref: ${{ needs.resolve-source.outputs.commit }}
           submodules: recursive
 
       - name: Resolve crate version
@@ -982,7 +1010,7 @@ jobs:
 
   consumer-test-aarch64:
     name: Consumer test (Linux aarch64 cross)
-    needs: build
+    needs: [resolve-source, build]
     runs-on: ubuntu-22.04
     env:
       TARGET: aarch64-unknown-linux-gnu
@@ -990,6 +1018,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
         with:
+          ref: ${{ needs.resolve-source.outputs.commit }}
           submodules: recursive
 
       - name: Resolve crate version
@@ -1072,7 +1101,7 @@ jobs:
 
   consumer-test-android:
     name: Consumer test (Android ${{ matrix.target }})
-    needs: build
+    needs: [resolve-source, build]
     runs-on: ubuntu-22.04
     strategy:
       fail-fast: false
@@ -1086,6 +1115,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
         with:
+          ref: ${{ needs.resolve-source.outputs.commit }}
           submodules: recursive
 
       - name: Resolve crate version
@@ -1177,14 +1207,15 @@ jobs:
 
   consumer-test-macos:
     name: Consumer test (macOS aarch64)
-    needs: build
-    runs-on: macos-14
+    needs: [resolve-source, build]
+    runs-on: macos-15
     env:
       TARGET: aarch64-apple-darwin
     steps:
       - name: Checkout
         uses: actions/checkout@v4
         with:
+          ref: ${{ needs.resolve-source.outputs.commit }}
           submodules: recursive
 
       - name: Resolve crate version
@@ -1238,14 +1269,15 @@ jobs:
 
   consumer-test-ios-sim:
     name: Consumer test (iOS simulator aarch64)
-    needs: build
-    runs-on: macos-14
+    needs: [resolve-source, build]
+    runs-on: macos-15
     env:
       TARGET: aarch64-apple-ios-sim
     steps:
       - name: Checkout
         uses: actions/checkout@v4
         with:
+          ref: ${{ needs.resolve-source.outputs.commit }}
           submodules: recursive
 
       - name: Resolve crate version
@@ -1299,14 +1331,15 @@ jobs:
 
   consumer-test-ios:
     name: Consumer test (iOS device aarch64)
-    needs: build
-    runs-on: macos-14
+    needs: [resolve-source, build]
+    runs-on: macos-15
     env:
       TARGET: aarch64-apple-ios
     steps:
       - name: Checkout
         uses: actions/checkout@v4
         with:
+          ref: ${{ needs.resolve-source.outputs.commit }}
           submodules: recursive
 
       - name: Resolve crate version
@@ -1360,14 +1393,16 @@ jobs:
 
   download-test-ios-sim-after-release:
     name: Download test (iOS simulator aarch64, after release)
-    needs: release
+    needs: [resolve-source, release]
     if: ${{ needs.release.result == 'success' }}
-    runs-on: macos-14
+    runs-on: macos-15
     env:
       TARGET: aarch64-apple-ios-sim
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.resolve-source.outputs.commit }}
 
       - name: Resolve crate version
         run: |
@@ -1394,14 +1429,16 @@ jobs:
 
   download-test-ios-after-release:
     name: Download test (iOS device aarch64, after release)
-    needs: release
+    needs: [resolve-source, release]
     if: ${{ needs.release.result == 'success' }}
-    runs-on: macos-14
+    runs-on: macos-15
     env:
       TARGET: aarch64-apple-ios
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.resolve-source.outputs.commit }}
 
       - name: Resolve crate version
         run: |
@@ -1427,12 +1464,14 @@ jobs:
           cargo build -p aztec-barretenberg-rs --target ${{ env.TARGET }}
   download-test-linux-x64-after-release:
     name: Download test (Linux x86_64, after release)
-    needs: release
+    needs: [resolve-source, release]
     if: ${{ needs.release.result == 'success' }}
     runs-on: ubuntu-22.04
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.resolve-source.outputs.commit }}
 
       - name: Resolve crate version
         run: |
@@ -1460,12 +1499,14 @@ jobs:
 
   download-test-linux-aarch64-after-release:
     name: Download test (Linux aarch64 cross, after release)
-    needs: release
+    needs: [resolve-source, release]
     if: ${{ needs.release.result == 'success' }}
     runs-on: ubuntu-22.04
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.resolve-source.outputs.commit }}
 
       - name: Resolve crate version
         run: |
@@ -1504,12 +1545,14 @@ jobs:
 
   download-test-macos-after-release:
     name: Download test (macOS aarch64, after release)
-    needs: release
+    needs: [resolve-source, release]
     if: ${{ needs.release.result == 'success' }}
-    runs-on: macos-14
+    runs-on: macos-15
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.resolve-source.outputs.commit }}
 
       - name: Resolve crate version
         run: |
@@ -1545,7 +1588,7 @@ jobs:
 
   download-test-android-after-release:
     name: Download test (Android ${{ matrix.target }}, after release)
-    needs: release
+    needs: [resolve-source, release]
     if: ${{ needs.release.result == 'success' }}
     runs-on: ubuntu-22.04
     strategy:
@@ -1559,6 +1602,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.resolve-source.outputs.commit }}
 
       - name: Resolve crate version
         run: |
