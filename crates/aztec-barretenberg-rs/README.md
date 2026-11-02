@@ -21,7 +21,10 @@ provide their own coordination if they also initialize or access the global CRS.
 This change requires the matching `v5.0.0-usernode.2` crypto and prover prebuilts.
 Build/publish that version using `.github/workflows/bb-prebuilt.yml` before
 consuming the revision through the normal prebuilt download path. Existing `.1`
-prebuilts do not implement the required factory upgrade.
+prebuilts do not implement the required factory upgrade. For a manual release,
+select the workflow ref containing the intended crate versions and set
+`publish=true`; newly created tags target that run's exact commit. Publication
+rejects an existing tag pointing to a different commit before replacing assets.
 
 ## Tests
 
