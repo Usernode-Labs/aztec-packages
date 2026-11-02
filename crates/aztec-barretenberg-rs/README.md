@@ -22,9 +22,13 @@ This change requires the matching `v5.0.0-usernode.2` crypto and prover prebuilt
 Build/publish that version using `.github/workflows/bb-prebuilt.yml` before
 consuming the revision through the normal prebuilt download path. Existing `.1`
 prebuilts do not implement the required factory upgrade. For a manual release,
-select the workflow ref containing the intended crate versions and set
-`publish=true`; newly created tags target that run's exact commit. Publication
-rejects an existing tag pointing to a different commit before replacing assets.
+select the updated workflow ref and set `publish=true`. The optional `source_ref`
+input selects the source tag, branch, or commit to build; by default it uses the
+workflow commit. A resolver pins that source once, and every build and consumer
+check uses its exact commit. Newly created release tags target that source commit.
+Publication rejects an existing tag pointing elsewhere before replacing assets.
+This allows rebuilding an existing tag with newer runners without moving it.
+Apple jobs use macOS 15, which has precompiled Homebrew LLVM 19 packages.
 
 ## Tests
 
