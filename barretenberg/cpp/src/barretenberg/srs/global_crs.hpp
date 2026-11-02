@@ -22,6 +22,11 @@ void init_grumpkin_mem_crs_factory(std::vector<curve::Grumpkin::AffineElement> c
 void init_bn254_mem_crs_factory(std::vector<bb::g1::affine_element> const& points,
                                 bb::g2::affine_element const& g2_point);
 
+// Upgrade an in-memory verifier CRS to a larger prover CRS. The caller must
+// exclude concurrent factory access. Existing shared CRS objects remain valid.
+void upgrade_bn254_mem_crs_factory(std::vector<bb::g1::affine_element> const& points,
+                                   bb::g2::affine_element const& g2_point);
+
 // Initializes the crs using files if available, otherwise using the network
 void init_grumpkin_net_crs_factory(const std::filesystem::path& path);
 void init_bn254_net_crs_factory(const std::filesystem::path& path);

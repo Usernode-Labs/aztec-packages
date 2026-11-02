@@ -772,9 +772,11 @@ fn main() {
     println!("cargo:rustc-link-lib=static=bb_rust_prover_api");
 
     // Download CRS assets and generate the embedded module consumed via include_bytes!.
-    ensure_crs_downloaded(&out_dir)
-        .expect("failed to download CRS assets for embedded initialization");
-    emit_embedded_crs_module(&out_dir).expect("failed to write embedded CRS module");
+    if env::var_os("CARGO_FEATURE_EXTERNAL_CRS").is_none() {
+        ensure_crs_downloaded(&out_dir)
+            .expect("failed to download CRS assets for embedded initialization");
+        emit_embedded_crs_module(&out_dir).expect("failed to write embedded CRS module");
+    }
 
     // Link only the prover side here. The crypto sys dependency owns and bundles the
     // disjoint primitive archive, keeping crypto-only consumers off the prover graph.

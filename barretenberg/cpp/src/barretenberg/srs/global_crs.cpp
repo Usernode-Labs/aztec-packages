@@ -31,6 +31,20 @@ void init_bn254_mem_crs_factory(std::vector<g1::affine_element> const& points, g
     bn254_crs_factory = std::make_shared<factories::MemBn254CrsFactory>(points, g2_point);
 }
 
+void upgrade_bn254_mem_crs_factory(std::vector<g1::affine_element> const& points, g2::affine_element const& g2_point)
+{
+    if (bn254_crs_factory != nullptr) {
+        auto existing = bn254_crs_factory->get_verifier_crs();
+        if (existing->get_g2x() != g2_point) {
+            throw_or_abort("cannot upgrade BN254 CRS with a different G2 point");
+        }
+        if (existing->get_monomial_size() >= points.size()) {
+            return;
+        }
+    }
+    bn254_crs_factory = std::make_shared<factories::MemBn254CrsFactory>(points, g2_point);
+}
+
 void init_grumpkin_mem_crs_factory(std::vector<curve::Grumpkin::AffineElement> const& points)
 {
     grumpkin_crs_factory = std::make_shared<factories::MemGrumpkinCrsFactory>(points);

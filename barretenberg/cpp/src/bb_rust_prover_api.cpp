@@ -286,7 +286,8 @@ void srs_init_srs(const uint8_t* points_buf, const uint32_t* num_points_be, cons
         g1_points[i] = from_buffer<bb::g1::affine_element>(points_buf, static_cast<size_t>(i) * 64);
     }
     const auto g2_point = from_buffer<bb::g2::affine_element>(g2_point_buf);
-    bb::srs::init_bn254_mem_crs_factory(g1_points, g2_point);
+    // Rust excludes concurrent CRS access while initializing or upgrading.
+    bb::srs::upgrade_bn254_mem_crs_factory(g1_points, g2_point);
 }
 
 void srs_init_grumpkin_srs(const uint8_t* points_buf, const uint32_t* num_points_be)

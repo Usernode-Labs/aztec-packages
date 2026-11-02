@@ -87,7 +87,11 @@ fn ffi_surface_is_consistent() {
     let prover_cpp_exports = collect_cpp_exports(&prover_cpp);
     let crypto_sys_decls = collect_sys_decls(&crypto_sys);
     let prover_sys_decls = collect_sys_decls(&prover_sys);
-    let rust_uses = collect_rs_ffi_uses(&rs);
+    let mut rust_uses = collect_rs_ffi_uses(&rs);
+    rust_uses.extend(collect_rs_ffi_uses(
+        &fs::read_to_string(root.join("crates/aztec-barretenberg-rs/src/crs.rs"))
+            .expect("read CRS initialization"),
+    ));
 
     assert_eq!(
         crypto_cpp_exports, crypto_sys_decls,

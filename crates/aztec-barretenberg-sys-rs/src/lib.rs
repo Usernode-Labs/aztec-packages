@@ -12,6 +12,13 @@ pub use aztec_barretenberg_crypto_sys_rs::{
 // Low-level prover/SRS FFI provided by `bb_rust_prover_api`. Primitive FFI is
 // re-exported above so existing users of this crate keep the same source API.
 
+/// Minimal public verifier parameters: one G1 generator and the trusted G2 point.
+pub mod crs_verifier {
+    pub static BN254_G1: &[u8] = include_bytes!("crs/bn254_g1.dat");
+    pub static BN254_G2: &[u8] = include_bytes!("crs/bn254_g2.dat");
+}
+
+#[cfg(not(feature = "external-crs"))]
 pub mod crs_embedded {
     include!(concat!(env!("OUT_DIR"), "/crs_embedded.rs"));
 }
