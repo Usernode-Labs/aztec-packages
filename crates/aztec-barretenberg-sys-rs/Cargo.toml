@@ -1,11 +1,15 @@
 [package]
 name = "aztec-barretenberg-sys-rs"
-version = "5.0.0-usernode.1"
+version = "5.0.0-usernode.2"
 edition = "2021"
 license = "MIT"
 description = "Unsafe FFI bindings to a minimal Barretenberg C++ shim for MegaHonk and Schnorr."
 links = "aztec_barretenberg"
 
 [dependencies]
-aztec-barretenberg-crypto-sys-rs = { path = "../aztec-barretenberg-crypto-sys-rs", version = "5.0.0-usernode.1" }
+aztec-barretenberg-crypto-sys-rs = { path = "../aztec-barretenberg-crypto-sys-rs", version = "5.0.0-usernode.2" }
 libc = "0.2"
+
+[features]
+# Exclude the 144 MiB proving CRS from compilation and the final binary.
+external-crs = []

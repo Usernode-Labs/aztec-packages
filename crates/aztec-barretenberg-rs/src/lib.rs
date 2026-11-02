@@ -1,10 +1,15 @@
 use acir::AcirField;
 use acir_field::FieldElement as FE;
-use std::sync::OnceLock;
+mod crs;
+#[cfg(feature = "external-crs")]
+pub use crs::configure_external_prover_crs;
+pub use crs::{prepare_prover_crs, prover_crs_initialized, ProverCrs};
 use thiserror::Error;
 
 #[derive(Clone, Debug, Error)]
 pub enum BbError {
+    #[error("proving parameters unavailable: {0}")]
+    Crs(String),
     #[error("ffi not linked: {0}")]
     FfiUnavailable(&'static str),
     #[error("circuit exceeds proof size limit")]
@@ -38,64 +43,8 @@ pub struct MegaHonkCircuitMetadata {
     pub num_public_inputs: usize,
 }
 
-fn init_crs_from_bytes(
-    bn254_g1: &[u8],
-    bn254_g1_points: u32,
-    bn254_g2: &[u8],
-    grumpkin_g1: &[u8],
-    grumpkin_points: u32,
-) -> std::result::Result<(), BbError> {
-    const POINT_SIZE: usize = 64;
-    let expected_g1_bytes = bn254_g1_points as usize * POINT_SIZE;
-    let expected_grumpkin_bytes = grumpkin_points as usize * POINT_SIZE;
-    if bn254_g1.len() != expected_g1_bytes {
-        return Err(BbError::Failure("bn254_g1 length mismatch"));
-    }
-    if bn254_g2.len() != 128 {
-        return Err(BbError::Failure("bn254_g2 length mismatch"));
-    }
-    if grumpkin_g1.len() != expected_grumpkin_bytes {
-        return Err(BbError::Failure("grumpkin_g1 length mismatch"));
-    }
-
-    let bn254_points_be = bn254_g1_points.to_be();
-    let grumpkin_points_be = grumpkin_points.to_be();
-    unsafe {
-        aztec_barretenberg_sys_rs::srs_init_srs(
-            bn254_g1.as_ptr(),
-            &bn254_points_be as *const u32,
-            bn254_g2.as_ptr(),
-        );
-        aztec_barretenberg_sys_rs::srs_init_grumpkin_srs(
-            grumpkin_g1.as_ptr(),
-            &grumpkin_points_be as *const u32,
-        );
-    }
-    Ok(())
-}
-
-static CRS_INIT: OnceLock<std::result::Result<(), BbError>> = OnceLock::new();
-
-fn init_embedded_crs_internal() -> std::result::Result<(), BbError> {
-    CRS_INIT
-        .get_or_init(|| {
-            init_crs_from_bytes(
-                aztec_barretenberg_sys_rs::crs_embedded::BN254_G1,
-                aztec_barretenberg_sys_rs::crs_embedded::BN254_G1_POINTS,
-                aztec_barretenberg_sys_rs::crs_embedded::BN254_G2,
-                aztec_barretenberg_sys_rs::crs_embedded::GRUMPKIN_G1,
-                aztec_barretenberg_sys_rs::crs_embedded::GRUMPKIN_POINTS,
-            )
-        })
-        .clone()
-}
-
-fn ensure_crs() -> std::result::Result<(), BbError> {
-    init_embedded_crs_internal()
-}
-
 pub fn mega_honk_vk_from_acir(_acir: &[u8]) -> std::result::Result<Vk, BbError> {
-    ensure_crs()?;
+    let _crs = crs::prover()?;
     unsafe {
         let mut out_ptr: *mut u8 = std::ptr::null_mut();
         let mut out_len: usize = 0;
@@ -118,7 +67,7 @@ pub fn mega_honk_vk_from_acir(_acir: &[u8]) -> std::result::Result<Vk, BbError> 
 pub fn mega_honk_circuit_metadata(
     _acir: &[u8],
 ) -> std::result::Result<MegaHonkCircuitMetadata, BbError> {
-    ensure_crs()?;
+    let _crs = crs::verifier()?;
     unsafe {
         let mut log_dyadic_size: u32 = 0;
         let mut max_log_dyadic_size: u32 = 0;
@@ -142,7 +91,7 @@ pub fn mega_honk_circuit_metadata(
 }
 
 pub fn prove_mega_honk(_acir: &[u8], _witness: &[u8]) -> std::result::Result<(Proof, Vk), BbError> {
-    ensure_crs()?;
+    let _crs = crs::prover()?;
     unsafe {
         let mut p_ptr: *mut u8 = std::ptr::null_mut();
         let mut p_len: usize = 0;
@@ -185,7 +134,7 @@ fn map_verify_rc(rc: i32) -> std::result::Result<(), VerifyError> {
 
 /// Verify a MegaHonk leaf-style proof (default IO layout).
 pub fn verify_mega_honk_leaf(_proof: &[u8], _vk: &[u8]) -> std::result::Result<bool, VerifyError> {
-    ensure_crs().map_err(|_| VerifyError::Internal)?;
+    let _crs = crs::verifier().map_err(|_| VerifyError::Internal)?;
     unsafe {
         let mut ok = false;
         let rc = aztec_barretenberg_sys_rs::bb_mh_verify_default(
@@ -207,7 +156,7 @@ pub fn verify_mega_honk_leaf(_proof: &[u8], _vk: &[u8]) -> std::result::Result<b
 /// - `Ok(false)`: proof/VK are well-formed but verification failed.
 /// - `Err(_)`: malformed blobs, size-limit rejection, or internal failure.
 pub fn verify_ultra_zk_honk(_proof: &[u8], _vk: &[u8]) -> std::result::Result<bool, VerifyError> {
-    ensure_crs().map_err(|_| VerifyError::Internal)?;
+    let _crs = crs::verifier().map_err(|_| VerifyError::Internal)?;
     unsafe {
         let mut ok = false;
         let rc = aztec_barretenberg_sys_rs::bb_uhz_verify(
@@ -225,7 +174,7 @@ pub fn verify_ultra_zk_honk(_proof: &[u8], _vk: &[u8]) -> std::result::Result<bo
 /// Return Mega proof public inputs as concatenated 32-byte big-endian field bytes.
 /// The number of public inputs is determined from the provided VK.
 pub fn mega_honk_public_inputs(_proof: &[u8], _vk: &[u8]) -> std::result::Result<Vec<u8>, BbError> {
-    ensure_crs()?;
+    let _crs = crs::verifier()?;
     unsafe {
         let mut p_ptr: *mut u8 = std::ptr::null_mut();
         let mut p_len: usize = 0;
@@ -249,7 +198,7 @@ pub fn mega_honk_public_inputs(_proof: &[u8], _vk: &[u8]) -> std::result::Result
 /// Return UltraZK proof public inputs as concatenated 32-byte big-endian field bytes.
 /// The number of public inputs is determined from the provided VK.
 pub fn ultra_zk_public_inputs(_proof: &[u8], _vk: &[u8]) -> std::result::Result<Vec<u8>, BbError> {
-    ensure_crs()?;
+    let _crs = crs::verifier()?;
     unsafe {
         let mut p_ptr: *mut u8 = std::ptr::null_mut();
         let mut p_len: usize = 0;
@@ -272,7 +221,7 @@ pub fn ultra_zk_public_inputs(_proof: &[u8], _vk: &[u8]) -> std::result::Result<
 
 /// Compute the Mega VK hash (32-byte big-endian field element) from VK bytes.
 pub fn mega_honk_vk_hash(_vk: &[u8]) -> std::result::Result<[u8; 32], BbError> {
-    ensure_crs()?;
+    let _crs = crs::verifier()?;
     unsafe {
         let mut out = [0u8; 32];
         let rc =
@@ -288,7 +237,7 @@ pub fn mega_honk_vk_hash(_vk: &[u8]) -> std::result::Result<[u8; 32], BbError> {
 /// a Poseidon2 commitment to all inner UltraZK public inputs as the sole *semantic* outer public input
 /// (in addition to DefaultIO pairing-point public inputs used for recursive aggregation).
 pub fn mega_honk_vk_for_ultra_zk_leaf_wrapper(_vk: &[u8]) -> std::result::Result<Vk, VerifyError> {
-    ensure_crs().map_err(|_| VerifyError::Internal)?;
+    let _crs = crs::prover().map_err(|_| VerifyError::Internal)?;
     unsafe {
         let mut v_ptr: *mut u8 = std::ptr::null_mut();
         let mut v_len: usize = 0;
@@ -321,7 +270,7 @@ pub fn wrap_ultra_zk_as_mega_honk_leaf(
     _vk: &[u8],
     expected_scoped_nullifier: [u8; 32],
 ) -> std::result::Result<(Proof, Vk), VerifyError> {
-    ensure_crs().map_err(|_| VerifyError::Internal)?;
+    let _crs = crs::prover().map_err(|_| VerifyError::Internal)?;
     unsafe {
         let mut p_ptr: *mut u8 = std::ptr::null_mut();
         let mut p_len: usize = 0;
@@ -358,7 +307,7 @@ pub fn batch_merge_leaf(
     pb: &[u8],
     vkb: &[u8],
 ) -> std::result::Result<Proof, BbError> {
-    ensure_crs()?;
+    let _crs = crs::prover()?;
     unsafe {
         let mut p_ptr: *mut u8 = std::ptr::null_mut();
         let mut p_len: usize = 0;
@@ -391,7 +340,7 @@ pub fn batch_merge_leaf_with_vk(
     pb: &[u8],
     vkb: &[u8],
 ) -> std::result::Result<(Proof, Vk), BbError> {
-    ensure_crs()?;
+    let _crs = crs::prover()?;
     unsafe {
         let mut p_ptr: *mut u8 = std::ptr::null_mut();
         let mut p_len: usize = 0;
@@ -424,7 +373,7 @@ pub fn batch_merge_leaf_with_vk(
 
 /// Merge two merge-proofs whose children are leaf-merge proofs.
 pub fn batch_merge_from_leaf_merges(pa: &[u8], pb: &[u8]) -> std::result::Result<Proof, BbError> {
-    ensure_crs()?;
+    let _crs = crs::prover()?;
     unsafe {
         let mut p_ptr: *mut u8 = std::ptr::null_mut();
         let mut p_len: usize = 0;
@@ -451,7 +400,7 @@ pub fn batch_merge_from_leaf_merges_with_vk(
     pa: &[u8],
     pb: &[u8],
 ) -> std::result::Result<(Proof, Vk), BbError> {
-    ensure_crs()?;
+    let _crs = crs::prover()?;
     unsafe {
         let mut p_ptr: *mut u8 = std::ptr::null_mut();
         let mut p_len: usize = 0;
@@ -480,7 +429,7 @@ pub fn batch_merge_from_leaf_merges_with_vk(
 
 /// Merge two aggregate merge-proofs (depth >= 2).
 pub fn batch_merge(pa: &[u8], pb: &[u8]) -> std::result::Result<Proof, BbError> {
-    ensure_crs()?;
+    let _crs = crs::prover()?;
     unsafe {
         let mut p_ptr: *mut u8 = std::ptr::null_mut();
         let mut p_len: usize = 0;
@@ -504,7 +453,7 @@ pub fn batch_merge(pa: &[u8], pb: &[u8]) -> std::result::Result<Proof, BbError> 
 /// Merge two aggregate merge-proofs and return both the merged proof and the
 /// verifier key for the resulting aggregate merge circuit.
 pub fn batch_merge_with_vk(pa: &[u8], pb: &[u8]) -> std::result::Result<(Proof, Vk), BbError> {
-    ensure_crs()?;
+    let _crs = crs::prover()?;
     unsafe {
         let mut p_ptr: *mut u8 = std::ptr::null_mut();
         let mut p_len: usize = 0;
@@ -533,7 +482,7 @@ pub fn batch_merge_with_vk(pa: &[u8], pb: &[u8]) -> std::result::Result<(Proof, 
 
 /// Verify a leaf-level merge proof against the embedded leaf-merge VK.
 pub fn verify_batch_merge_leaf(proof: &[u8]) -> std::result::Result<bool, VerifyError> {
-    ensure_crs().map_err(|_| VerifyError::Internal)?;
+    let _crs = crs::verifier().map_err(|_| VerifyError::Internal)?;
     unsafe {
         let mut ok = false;
         let rc = aztec_barretenberg_sys_rs::bb_verify_batch_merge_leaf(
@@ -548,7 +497,7 @@ pub fn verify_batch_merge_leaf(proof: &[u8]) -> std::result::Result<bool, Verify
 
 /// Verify a merge-proof of merge-proofs against the embedded aggregate-merge VK.
 pub fn verify_batch_merge(proof: &[u8]) -> std::result::Result<bool, VerifyError> {
-    ensure_crs().map_err(|_| VerifyError::Internal)?;
+    let _crs = crs::verifier().map_err(|_| VerifyError::Internal)?;
     unsafe {
         let mut ok = false;
         let rc =
@@ -560,7 +509,7 @@ pub fn verify_batch_merge(proof: &[u8]) -> std::result::Result<bool, VerifyError
 
 /// Extract leaf-level merge proof public inputs using the embedded leaf-merge VK.
 pub fn batch_merge_public_inputs_leaf(proof: &[u8]) -> std::result::Result<Vec<u8>, BbError> {
-    ensure_crs()?;
+    let _crs = crs::verifier()?;
     unsafe {
         let mut p_ptr: *mut u8 = std::ptr::null_mut();
         let mut p_len: usize = 0;
@@ -581,7 +530,7 @@ pub fn batch_merge_public_inputs_leaf(proof: &[u8]) -> std::result::Result<Vec<u
 
 /// Extract merge-proof public inputs using the embedded aggregate-merge VK.
 pub fn batch_merge_public_inputs(proof: &[u8]) -> std::result::Result<Vec<u8>, BbError> {
-    ensure_crs()?;
+    let _crs = crs::verifier()?;
     unsafe {
         let mut p_ptr: *mut u8 = std::ptr::null_mut();
         let mut p_len: usize = 0;
@@ -602,7 +551,7 @@ pub fn batch_merge_public_inputs(proof: &[u8]) -> std::result::Result<Vec<u8>, B
 
 /// Return the embedded VK bytes used for leaf-level merge proofs.
 pub fn batch_merge_leaf_vk() -> std::result::Result<Vk, BbError> {
-    ensure_crs()?;
+    let _crs = crs::verifier()?;
     unsafe {
         let mut v_ptr: *mut u8 = std::ptr::null_mut();
         let mut v_len: usize = 0;
@@ -618,7 +567,7 @@ pub fn batch_merge_leaf_vk() -> std::result::Result<Vk, BbError> {
 
 /// Return the embedded VK bytes used for aggregate merge proofs.
 pub fn batch_merge_agg_vk() -> std::result::Result<Vk, BbError> {
-    ensure_crs()?;
+    let _crs = crs::verifier()?;
     unsafe {
         let mut v_ptr: *mut u8 = std::ptr::null_mut();
         let mut v_len: usize = 0;
@@ -730,7 +679,7 @@ impl acvm::blackbox_solver::BlackBoxFunctionSolver<FE> for BarretenbergBlackBoxS
         if !_predicate {
             return Ok((FE::zero(), FE::zero()));
         }
-        if _points.len() % 2 != 0
+        if !_points.len().is_multiple_of(2)
             || _scalars_lo.len() != _scalars_hi.len()
             || _points.len() / 2 != _scalars_lo.len()
         {
@@ -1011,7 +960,7 @@ pub fn grumpkin_hash_to_curve(
         let rc = aztec_barretenberg_sys_rs::bb_grumpkin_hash_to_curve(
             field_be.as_ptr(),
             1,
-            domain as u32,
+            domain,
             x.as_mut_ptr(),
             y.as_mut_ptr(),
         );

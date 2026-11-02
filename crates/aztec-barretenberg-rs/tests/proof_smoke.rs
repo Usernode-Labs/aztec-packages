@@ -9,6 +9,28 @@ use aztec_barretenberg_rs::{
 };
 use serde::Serialize;
 
+fn configure_test_crs() {
+    #[cfg(feature = "external-crs")]
+    {
+        static CONFIGURED: std::sync::OnceLock<()> = std::sync::OnceLock::new();
+        CONFIGURED.get_or_init(|| {
+            let directory = std::path::PathBuf::from(
+                std::env::var("BB_TEST_CRS_DIR")
+                    .expect("set BB_TEST_CRS_DIR to the directory of downloaded CRS files"),
+            );
+            aztec_barretenberg_rs::configure_external_prover_crs(move || {
+                Ok(aztec_barretenberg_rs::ProverCrs {
+                    bn254_g1: std::fs::read(directory.join("bn254_g1.dat"))
+                        .map_err(|error| error.to_string())?,
+                    grumpkin_g1: std::fs::read(directory.join("grumpkin_g1.flat.dat"))
+                        .map_err(|error| error.to_string())?,
+                })
+            })
+            .unwrap();
+        });
+    }
+}
+
 const FORMAT_MSGPACK_COMPACT: u8 = 3;
 
 fn serialize_msgpack_compact<T: Serialize>(value: &T) -> Vec<u8> {
@@ -27,6 +49,7 @@ fn serialize_msgpack_compact<T: Serialize>(value: &T) -> Vec<u8> {
 
 #[test]
 fn proves_and_verifies_beta_22_acir() {
+    configure_test_crs();
     let circuit = Circuit::from_str(
         r#"
         private parameters: [w1, w2]
@@ -61,6 +84,17 @@ fn proves_and_verifies_beta_22_acir() {
     );
     assert_ne!(mega_honk_vk_hash(&vk.0).expect("hash VK"), [0u8; 32]);
 
+    // Regenerate the verifier-only test vector with BB_TEST_WRITE_FIXTURE=<directory>.
+    if let Ok(directory) = std::env::var("BB_TEST_WRITE_FIXTURE") {
+        std::fs::create_dir_all(&directory).unwrap();
+        std::fs::write(
+            std::path::Path::new(&directory).join("addition.proof"),
+            &proof.0,
+        )
+        .unwrap();
+        std::fs::write(std::path::Path::new(&directory).join("addition.vk"), &vk.0).unwrap();
+    }
+
     let public_inputs = mega_honk_public_inputs(&proof.0, &vk.0).expect("extract public inputs");
     assert_eq!(public_inputs.len(), 32);
     let mut expected = [0u8; 32];
@@ -70,6 +104,7 @@ fn proves_and_verifies_beta_22_acir() {
 
 #[test]
 fn bb5_embedded_batch_merge_keys_match_generated_circuits() {
+    configure_test_crs();
     let circuit = Circuit::from_str(
         r#"
         private parameters: [w1, w2, w3, w4, w5]

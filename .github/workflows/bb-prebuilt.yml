@@ -719,9 +719,36 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euxo pipefail
-          tag='${{ env.VERSION_TAG }}'
-          # Create release if missing (empty notes/title)
-          gh release view "$tag" >/dev/null 2>&1 || gh release create "$tag" -t "$tag" -n ""
+          tag="$VERSION_TAG"
+          tag_ref="refs/tags/$tag"
+          assert_tag_target() {
+            local refs status tag_commit
+            if refs=$(git ls-remote --exit-code --tags origin "$tag_ref" "${tag_ref}^{}"); then
+              # Annotated tags name a tag object; compare its peeled commit instead.
+              tag_commit=$(printf '%s\n' "$refs" | awk -v ref="$tag_ref" '
+                $2 == ref { commit = $1 }
+                $2 == ref "^{}" { peeled = $1 }
+                END { print peeled ? peeled : commit }
+              ')
+              if [ "$tag_commit" != "$GITHUB_SHA" ]; then
+                echo "ERROR: release tag $tag points to $tag_commit, but artifacts were built from $GITHUB_SHA" >&2
+                return 1
+              fi
+            else
+              status=$?
+              if [ "$status" -eq 2 ] && [ "${1:-}" = "allow-missing" ]; then
+                return 0
+              fi
+              echo "ERROR: could not resolve release tag $tag (git ls-remote exited $status)" >&2
+              return 1
+            fi
+          }
+          assert_tag_target allow-missing
+          # New tags must identify the checked-out build, not the default branch.
+          gh release view "$tag" >/dev/null 2>&1 || gh release create "$tag" --target "$GITHUB_SHA" -t "$tag" -n ""
+          # Recheck after creation before replacing any assets, including if a tag
+          # was created concurrently or an existing release has lost its tag.
+          assert_tag_target
           # Proactively delete existing assets with same names to avoid stale bytes
           for f in out/barretenberg-*.tar.gz; do
             name=$(basename "$f")

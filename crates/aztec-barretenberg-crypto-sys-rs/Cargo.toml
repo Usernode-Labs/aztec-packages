@@ -1,6 +1,6 @@
 [package]
 name = "aztec-barretenberg-crypto-sys-rs"
-version = "5.0.0-usernode.1"
+version = "5.0.0-usernode.2"
 edition = "2021"
 license = "MIT"
 description = "Unsafe FFI bindings to Barretenberg crypto primitives used by Usernode."
